@@ -13,6 +13,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
 jobs:
   release-please:
     if: ${{ github.event_name != 'workflow_dispatch' }}
@@ -118,8 +122,15 @@ jobs:
       - if: ${{ steps.version.outputs.already_published != 'true' }}
         name: Stage package for approval
         run: |
-          stage_output=$(npm stage publish ./google-analytics-axi-*.tgz --access public --provenance)
-          printf '%s\n' "$stage_output"
+          version=$(tar -xOzf google-analytics-axi-*.tgz package/package.json | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")
+          if stage_output=$(npm stage publish ./google-analytics-axi-*.tgz --access public --provenance 2>&1); then
+            printf '%s\n' "$stage_output"
+          elif grep -Fq '409 Conflict' <<<"$stage_output" && grep -Fq "Cannot stage previously published version \"$version\"" <<<"$stage_output"; then
+            echo "Version $version is already staged; leaving the existing stage for approval."
+          else
+            printf '%s\n' "$stage_output" >&2
+            exit 1
+          fi
           version=$(tar -xOzf google-analytics-axi-*.tgz package/package.json | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")
           stage_id=$(printf '%s\n' "$stage_output" | sed -nE 's/.*staged with id ([^)]*).*/\1/p' | tail -n1)
           stage_id=${stage_id:-unavailable}
