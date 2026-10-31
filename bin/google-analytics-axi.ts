@@ -3,9 +3,7 @@ import { runAxiCli } from "axi-sdk-js";
 import { encode } from "@toon-format/toon";
 import { readFileSync } from "node:fs";
 
-const version: string = JSON.parse(
-  readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
-).version;
+const version: string = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version;
 
 const description = "Read-only Google Analytics 4 and Search Console for agents";
 const args = process.argv.slice(2);
