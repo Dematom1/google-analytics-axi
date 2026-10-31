@@ -29,6 +29,7 @@
     "prepack": "npm run build"
   },
   "dependencies": {
+    "@napi-rs/keyring": "^2.1.2",
     "@toon-format/toon": "2.3.1",
     "axi-sdk-js": "0.1.13"
   },
