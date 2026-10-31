@@ -192,8 +192,10 @@ export async function setupCommand(args: string[]): Promise<string> {
       parsed.type !== "service_account" ||
       !("client_email" in parsed) ||
       typeof parsed.client_email !== "string" ||
+      !parsed.client_email.trim() ||
       !("private_key" in parsed) ||
-      typeof parsed.private_key !== "string"
+      typeof parsed.private_key !== "string" ||
+      !parsed.private_key.trim()
     )
       fail("file is not a valid Google service-account key");
     saveConfig({ authType: "service-account", serviceAccountPath: resolve(path) });
