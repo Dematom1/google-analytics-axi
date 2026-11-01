@@ -125,7 +125,13 @@ export async function runOAuthSetup(options: OAuthOptions): Promise<void> {
     });
     if (!tokenResponse.ok) throw new Error("Google token exchange failed; check the OAuth client configuration");
     const data: unknown = await tokenResponse.json();
-    if (!data || typeof data !== "object" || !("refresh_token" in data) || typeof data.refresh_token !== "string")
+    if (
+      !data ||
+      typeof data !== "object" ||
+      !("refresh_token" in data) ||
+      typeof data.refresh_token !== "string" ||
+      !data.refresh_token.trim()
+    )
       throw new Error("Google did not return a refresh token; retry setup and approve offline access");
     try {
       options.keychain.setPassword(data.refresh_token);
