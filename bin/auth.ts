@@ -31,7 +31,7 @@ type ServiceAccount = {
 };
 type CredentialKind = "authorized_user" | "service_account";
 type AuthFactory = (options: GoogleAuthOptions) => Pick<GoogleAuth, "getApplicationDefault" | "getClient">;
-type ProviderOptions = { quotaProject?: string; authFactory?: AuthFactory; setupCheck?: SetupCheckOptions };
+type ProviderOptions = { quotaProject?: string; authFactory?: AuthFactory };
 export type AuthProvider = {
   client: AuthClient;
   type: CredentialKind;
@@ -178,7 +178,7 @@ function setupGuideOutput(missing: string[], status = "not configured"): string 
 async function setupWithChecks(options: ProviderOptions, propertyId?: string): Promise<string> {
   try {
     const auth = await getAuthClient(options);
-    return runSetupCheck(auth, { ...options.setupCheck, ...(propertyId ? { propertyId } : {}) });
+    return runSetupCheck(auth, propertyId ? { propertyId } : {});
   } catch (error) {
     if (error instanceof Error && error.message === "Google Application Default Credentials are not configured")
       return setupGuideOutput([

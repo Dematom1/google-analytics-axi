@@ -7,11 +7,7 @@ const SCOPES = [
   "https://www.googleapis.com/auth/webmasters.readonly",
 ];
 
-export type SetupCheckOptions = {
-  propertyId?: string;
-  request?: (auth: AuthProvider, url: string) => Promise<unknown>;
-  runReport?: (auth: AuthProvider, propertyId: string) => Promise<unknown>;
-};
+export type SetupCheckOptions = { propertyId?: string };
 
 type ErrorInfo = { status?: number; service?: string; project?: string; serviceDisabled: boolean };
 
@@ -177,8 +173,6 @@ function metricTotals(report: unknown): Record<string, string> {
 }
 
 export async function runSetupCheck(auth: AuthProvider, options: SetupCheckOptions = {}): Promise<string> {
-  const request = options.request ?? googleRequest;
-  const report = options.runReport ?? googleReport;
   const email = auth.email ?? "the authenticated account";
   const missing: string[] = [];
   const errors: { step: string; message: string }[] = [];
@@ -186,7 +180,7 @@ export async function runSetupCheck(auth: AuthProvider, options: SetupCheckOptio
   let sites: { site_url: string; permission: string }[] = [];
 
   try {
-    const response = await request(auth, "https://analyticsadmin.googleapis.com/v1beta/accountSummaries?pageSize=200");
+    const response = await googleRequest(auth, "https://analyticsadmin.googleapis.com/v1beta/accountSummaries?pageSize=200");
     properties = propertyEntries(rows(response, "accountSummaries"));
     if (!properties.length)
       missing.push(
@@ -205,7 +199,7 @@ export async function runSetupCheck(auth: AuthProvider, options: SetupCheckOptio
   }
 
   try {
-    const response = await request(auth, "https://searchconsole.googleapis.com/webmasters/v3/sites");
+    const response = await googleRequest(auth, "https://searchconsole.googleapis.com/webmasters/v3/sites");
     sites = siteEntries(rows(response, "siteEntry"));
     if (!sites.length)
       missing.push(
@@ -231,7 +225,7 @@ export async function runSetupCheck(auth: AuthProvider, options: SetupCheckOptio
     reportResult = { status: "skipped" };
   } else {
     try {
-      const response = await report(auth, propertyId);
+      const response = await googleReport(auth, propertyId);
       reportResult = {
         status: "ok",
         property_id: propertyId,
