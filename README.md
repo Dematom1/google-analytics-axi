@@ -27,4 +27,4 @@ Run `search-console-axi setup` to check credentials and accessible sites. `searc
 
 ## Read Search Console
 
-Run `search-console-axi` for the default site's last seven complete days of clicks, impressions, CTR, position, top queries and pages, and low-CTR opportunities. Use `search-console-axi inspect <url> --site <site-url>` to inspect indexing for a URL. All operations are read-only.
+Run `search-console-axi` for the default site's last seven complete days of clicks, impressions, CTR, position, top queries and pages, and low-CTR opportunities. Use `search-console-axi inspect <url> --site <site-url>` to inspect indexing for a URL. Reporting and inspection do not modify Search Console data; setup may write or remove local configuration.
