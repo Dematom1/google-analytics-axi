@@ -24,7 +24,13 @@ export const setupGuide = [
 type Site = { siteUrl: string; permissionLevel?: string };
 
 function apiDisabledMessage(error: unknown): string | undefined {
-  if (!error || typeof error !== "object" || !("response" in error) || !error.response || typeof error.response !== "object")
+  if (
+    !error ||
+    typeof error !== "object" ||
+    !("response" in error) ||
+    !error.response ||
+    typeof error.response !== "object"
+  )
     return undefined;
   const response = error.response;
   if (!("status" in response) || response.status !== 403 || !("data" in response)) return undefined;
@@ -35,21 +41,31 @@ function apiDisabledMessage(error: unknown): string | undefined {
   const details = "details" in googleError && Array.isArray(googleError.details) ? googleError.details : [];
   const legacy = "errors" in googleError && Array.isArray(googleError.errors) ? googleError.errors : [];
   const reasons = [
-    ...details.flatMap((detail) => detail && typeof detail === "object" && "reason" in detail ? [detail.reason] : []),
-    ...legacy.flatMap((detail) => detail && typeof detail === "object" && "reason" in detail ? [detail.reason] : []),
+    ...details.flatMap((detail) => (detail && typeof detail === "object" && "reason" in detail ? [detail.reason] : [])),
+    ...legacy.flatMap((detail) => (detail && typeof detail === "object" && "reason" in detail ? [detail.reason] : [])),
   ];
   if (!reasons.some((reason) => reason === "SERVICE_DISABLED" || reason === "accessNotConfigured")) return undefined;
   const metadata = details.find(
-    (detail) => detail && typeof detail === "object" && "metadata" in detail && detail.metadata && typeof detail.metadata === "object",
+    (detail) =>
+      detail &&
+      typeof detail === "object" &&
+      "metadata" in detail &&
+      detail.metadata &&
+      typeof detail.metadata === "object",
   );
-  const service = metadata && "metadata" in metadata && metadata.metadata && "service" in metadata.metadata
-    ? metadata.metadata.service
-    : undefined;
-  const consumer = metadata && "metadata" in metadata && metadata.metadata && "consumer" in metadata.metadata
-    ? metadata.metadata.consumer
-    : undefined;
+  const service =
+    metadata && "metadata" in metadata && metadata.metadata && "service" in metadata.metadata
+      ? metadata.metadata.service
+      : undefined;
+  const consumer =
+    metadata && "metadata" in metadata && metadata.metadata && "consumer" in metadata.metadata
+      ? metadata.metadata.consumer
+      : undefined;
   const message = "message" in googleError && typeof googleError.message === "string" ? googleError.message : "";
-  const api = typeof service === "string" ? service : message.match(/[\w.-]+\.googleapis\.com/)?.[0] ?? "Google Search Console API";
+  const api =
+    typeof service === "string"
+      ? service
+      : (message.match(/[\w.-]+\.googleapis\.com/)?.[0] ?? "Google Search Console API");
   const project =
     (typeof consumer === "string" ? consumer.match(/projects\/([^/]+)/)?.[1] : undefined) ??
     message.match(/project\s+([\w.-]+)/i)?.[1] ??
@@ -57,7 +73,8 @@ function apiDisabledMessage(error: unknown): string | undefined {
   return `Enable ${api} in ${project} to use Search Console.`;
 }
 
-const ACCESS_DENIED = "Search Console access denied. Add the authenticated account in Search Console Settings > Users and permissions.";
+const ACCESS_DENIED =
+  "Search Console access denied. Add the authenticated account in Search Console Settings > Users and permissions.";
 
 async function request(auth: AuthProvider, url: string, method = "GET", data?: object): Promise<unknown> {
   try {
@@ -66,8 +83,7 @@ async function request(auth: AuthProvider, url: string, method = "GET", data?: o
   } catch (error) {
     if (error instanceof Error && "response" in error && error.response && typeof error.response === "object") {
       const response = error.response;
-      if ("status" in response && response.status === 403)
-        error.message = apiDisabledMessage(error) ?? ACCESS_DENIED;
+      if ("status" in response && response.status === 403) error.message = apiDisabledMessage(error) ?? ACCESS_DENIED;
     }
     throw error;
   }
@@ -108,9 +124,7 @@ export async function runSetupCheck(auth: AuthProvider): Promise<string> {
     const accessible = await sites(auth);
     const missing = accessible.length
       ? []
-      : [
-          "No Search Console sites visible to this account - grant access as in step 4, or none exist.",
-        ];
+      : ["No Search Console sites visible to this account - grant access as in step 4, or none exist."];
     return encode({
       auth: { type: auth.type, source: auth.source, ...(auth.email ? { account_email: auth.email } : {}) },
       setup: { status: missing.length ? "incomplete" : "ready", missing, guide: setupGuide },

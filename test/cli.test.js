@@ -138,7 +138,12 @@ test("disabled Search Console APIs produce enable-project guidance for both Goog
   const failures = [
     {
       message: "API disabled",
-      details: [{ reason: "SERVICE_DISABLED", metadata: { service: "searchconsole.googleapis.com", consumer: "projects/12345" } }],
+      details: [
+        {
+          reason: "SERVICE_DISABLED",
+          metadata: { service: "searchconsole.googleapis.com", consumer: "projects/12345" },
+        },
+      ],
     },
     {
       message: "Google Search Console API has not been used in project 67890 before or it is disabled",
@@ -152,9 +157,11 @@ test("disabled Search Console APIs produce enable-project guidance for both Goog
     const auth = mockAuth(failRequest);
     const credential = new UserRefreshClient();
     credential.request = failRequest;
-    const setup = decode(await setupCommand(["check"], {
-      authFactory: () => ({ getApplicationDefault: async () => ({ credential, projectId: null }) }),
-    }));
+    const setup = decode(
+      await setupCommand(["check"], {
+        authFactory: () => ({ getApplicationDefault: async () => ({ credential, projectId: null }) }),
+      }),
+    );
     assert.match(setup.setup.missing[0], /Enable /);
     assert.match(setup.setup.missing[0], index === 0 ? /searchconsole\.googleapis\.com/ : /Google Search Console API/);
     assert.match(setup.setup.missing[0], index === 0 ? /12345/ : /67890/);
@@ -173,14 +180,19 @@ test("ordinary Search Console 403 errors retain access-denied guidance", async (
   const auth = mockAuth(failRequest);
   const credential = new UserRefreshClient();
   credential.request = failRequest;
-  const setup = decode(await setupCommand(["check"], {
-    authFactory: () => ({ getApplicationDefault: async () => ({ credential, projectId: null }) }),
-  }));
+  const setup = decode(
+    await setupCommand(["check"], {
+      authFactory: () => ({ getApplicationDefault: async () => ({ credential, projectId: null }) }),
+    }),
+  );
   assert.match(setup.setup.missing[0], /Search Console access denied/);
 
   const home = decode(await runHome(auth));
   assert.match(home.error, /Search Console access denied/);
-  await assert.rejects(inspectUrl(auth, "https://example.com", "sc-domain:example.com"), /Search Console access denied/);
+  await assert.rejects(
+    inspectUrl(auth, "https://example.com", "sc-domain:example.com"),
+    /Search Console access denied/,
+  );
 });
 
 test("home reports Search Console queries, pages, and low-CTR opportunities", async () => {
@@ -206,7 +218,11 @@ test("home reports Search Console queries, pages, and low-CTR opportunities", as
   const orderedQueries = reports.filter(({ data }) => data.orderBy);
   assert.deepEqual(
     orderedQueries.map(({ data }) => [data.orderBy[0].field, data.orderBy[0].direction]).sort(),
-    [["clicks", "descending"], ["clicks", "descending"], ["impressions", "descending"]].sort(),
+    [
+      ["clicks", "descending"],
+      ["clicks", "descending"],
+      ["impressions", "descending"],
+    ].sort(),
   );
   assert.equal(dates.length, 4);
   assert.ok(dates.every(([start, end]) => /^\d{4}-\d{2}-\d{2}$/.test(start) && /^\d{4}-\d{2}-\d{2}$/.test(end)));
