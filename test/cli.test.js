@@ -55,13 +55,17 @@ test("OAuth uses read-only scopes, validates the loopback callback, and stores o
       keychain,
       tokenEndpoint: `http://127.0.0.1:${address.port}/token`,
       authorizeEndpoint: "http://accounts.test/auth",
-      openBrowser: (value) => {
+      openBrowser: async (value) => {
         const auth = new URL(value);
         requestedScopes = auth.searchParams.get("scope");
         const redirect = new URL(auth.searchParams.get("redirect_uri"));
         redirect.searchParams.set("code", "authorization-code");
+        redirect.searchParams.set("state", "wrong-state");
+        const mismatch = await fetch(redirect);
+        assert.equal(mismatch.status, 400);
         redirect.searchParams.set("state", auth.searchParams.get("state"));
-        fetch(redirect).catch((error) => assert.fail(error));
+        const callback = await fetch(redirect);
+        assert.equal(callback.status, 200);
       },
     });
     assert.deepEqual(requestedScopes.split(" "), [

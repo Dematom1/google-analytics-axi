@@ -8,9 +8,6 @@ import { spawn } from "node:child_process";
 
 const SERVICE = "google-analytics-axi";
 const ACCOUNT = "google-oauth-refresh-token";
-/** Test-only overrides; inert unless GOOGLE_ANALYTICS_AXI_TEST_MODE=1. */
-const testOverride = (name: string) =>
-  process.env["GOOGLE_ANALYTICS_AXI_TEST_MODE"] === "1" ? process.env[`GOOGLE_ANALYTICS_AXI_TEST_${name}`] : undefined;
 const SCOPES = [
   "https://www.googleapis.com/auth/analytics.readonly",
   "https://www.googleapis.com/auth/webmasters.readonly",
@@ -36,7 +33,7 @@ export type OAuthOptions = {
 
 function systemKeychain(): Keychain {
   try {
-    return new Entry(testOverride("KEYCHAIN_SERVICE") ?? SERVICE, testOverride("KEYCHAIN_ACCOUNT") ?? ACCOUNT);
+    return new Entry(SERVICE, ACCOUNT);
   } catch {
     return fail("OS keychain is unavailable; install and unlock Secret Service (Linux) or use macOS Keychain");
   }
@@ -77,7 +74,7 @@ export async function runOAuthSetup(options: OAuthOptions): Promise<void> {
   const redirectUri = `http://127.0.0.1:${address.port}/oauth2callback`;
   const state = randomBytes(24).toString("hex");
   const authUrl = new URL(
-    options.authorizeEndpoint ?? testOverride("AUTHORIZATION_URL") ?? "https://accounts.google.com/o/oauth2/v2/auth",
+    options.authorizeEndpoint ?? "https://accounts.google.com/o/oauth2/v2/auth",
   );
   authUrl.search = new URLSearchParams({
     client_id: options.clientId,
@@ -100,8 +97,6 @@ export async function runOAuthSetup(options: OAuthOptions): Promise<void> {
       const expected = Buffer.from(state);
       if (got.length !== expected.length || !timingSafeEqual(got, expected)) {
         response.writeHead(400).end("OAuth state mismatch");
-        clearTimeout(timer);
-        reject(new Error("Google OAuth state validation failed"));
         return;
       }
       const code = url.searchParams.get("code");
@@ -115,12 +110,10 @@ export async function runOAuthSetup(options: OAuthOptions): Promise<void> {
     });
   });
   try {
-    const authUrlFile = testOverride("AUTH_URL_FILE");
-    if (authUrlFile) writeFileSync(authUrlFile, authUrl.toString(), { mode: 0o600 });
-    else (options.openBrowser ?? openBrowser)(authUrl.toString());
+    (options.openBrowser ?? openBrowser)(authUrl.toString());
     const code = await callback;
     const tokenResponse = await fetch(
-      options.tokenEndpoint ?? testOverride("TOKEN_URL") ?? "https://oauth2.googleapis.com/token",
+      options.tokenEndpoint ?? "https://oauth2.googleapis.com/token",
       {
         method: "POST",
         headers: { "content-type": "application/x-www-form-urlencoded" },
