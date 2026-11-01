@@ -1,15 +1,345 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { generateKeyPairSync } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
+import { decode } from "@toon-format/toon";
+import { JWT, UserRefreshClient } from "google-auth-library";
+import { getAuthClient, setupCommand } from "../dist/bin/auth.js";
+import { runHome, inspectUrl } from "../dist/bin/setup-check.js";
 
-const cli = new URL("../dist/bin/google-analytics-axi.js", import.meta.url);
+const cli = new URL("../dist/bin/search-console-axi.js", import.meta.url);
 const version = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
-const run = (...args) => execFileSync(process.execPath, [cli.pathname, ...args], { encoding: "utf8" });
+const scopes = ["https://www.googleapis.com/auth/webmasters.readonly"];
+const run = (args, env = {}) =>
+  execFileSync(process.execPath, [cli.pathname, ...args], { encoding: "utf8", env: { ...process.env, ...env } });
+const temp = (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "search-console-axi-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  return dir;
+};
+const setEnv = (t, name, value) => {
+  const previous = process.env[name];
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+  t.after(() => (previous === undefined ? delete process.env[name] : (process.env[name] = previous)));
+};
+const isolateAuthEnv = (t) => {
+  const dir = temp(t);
+  const env = {
+    XDG_CONFIG_HOME: dir,
+    SEARCH_CONSOLE_AXI_SA_KEY: undefined,
+    GOOGLE_APPLICATION_CREDENTIALS: undefined,
+    GOOGLE_CLOUD_QUOTA_PROJECT: undefined,
+  };
+  for (const [name, value] of Object.entries(env)) setEnv(t, name, value);
+  return env;
+};
+const { privateKey } = generateKeyPairSync("rsa", {
+  modulusLength: 2048,
+  privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  publicKeyEncoding: { type: "spki", format: "pem" },
+});
+const key = JSON.stringify({
+  type: "service_account",
+  client_email: "sc-agent@example.invalid",
+  private_key: privateKey,
+});
+const mockAuth = (request) => ({
+  type: "service_account",
+  source: "SEARCH_CONSOLE_AXI_SA_KEY",
+  email: "sc-agent@example.invalid",
+  client: { request },
+});
 
-test("CLI exposes SDK help and version and a no-argument home", () => {
-  assert.match(run("--help"), /Usage:/);
-  assert.match(run("--help"), /update/);
-  assert.equal(run("--version").trim(), version);
-  assert.match(run(), /status: scaffold/);
+test("CLI reports its version and live home without credentials", (t) => {
+  assert.equal(run(["--version"]).trim(), version);
+  const home = decode(
+    run([], { ...isolateAuthEnv(t), SEARCH_CONSOLE_AXI_SA_KEY: "{}", GOOGLE_APPLICATION_CREDENTIALS: "" }),
+  );
+  assert.equal(home.auth.status, "invalid");
+  assert.equal(home.setup.guide.length > 0, true);
+});
+
+test("ADC requests only the Search Console read-only scope", async (t) => {
+  isolateAuthEnv(t);
+  const client = new UserRefreshClient();
+  client.setCredentials({ access_token: "test-access-token" });
+  let options;
+  const auth = await getAuthClient({
+    authFactory: (opts) => {
+      options = opts;
+      return { getApplicationDefault: async () => ({ credential: client, projectId: null }) };
+    },
+  });
+  assert.equal(auth.type, "authorized_user");
+  assert.deepEqual(options.scopes, scopes);
+});
+
+test("GOOGLE_APPLICATION_CREDENTIALS accepts authorized-user ADC files", async (t) => {
+  const { XDG_CONFIG_HOME: dir } = isolateAuthEnv(t);
+  const credentialsPath = join(dir, "adc.json");
+  writeFileSync(
+    credentialsPath,
+    JSON.stringify({ type: "authorized_user", client_id: "client", client_secret: "secret", refresh_token: "refresh" }),
+  );
+  setEnv(t, "GOOGLE_APPLICATION_CREDENTIALS", credentialsPath);
+  setEnv(t, "SEARCH_CONSOLE_AXI_SA_KEY", undefined);
+  const credential = new UserRefreshClient();
+  let options;
+  const auth = await getAuthClient({
+    authFactory: (opts) => {
+      options = opts;
+      return { getApplicationDefault: async () => ({ credential, projectId: null }) };
+    },
+  });
+  assert.equal(options.keyFile, credentialsPath);
+  assert.equal(auth.type, "authorized_user");
+  assert.equal(auth.source, "GOOGLE_APPLICATION_CREDENTIALS");
+});
+
+test("auth status does not guess a credential type for an invalid ADC path", async (t) => {
+  isolateAuthEnv(t);
+  setEnv(t, "GOOGLE_APPLICATION_CREDENTIALS", "");
+  const status = decode(await setupCommand(["status"]));
+  assert.equal(status.auth.status, "invalid");
+  assert.equal("type" in status.auth, false);
+});
+
+test("service-account JSON env takes precedence without persisting or printing its key", async (t) => {
+  const { XDG_CONFIG_HOME: dir } = isolateAuthEnv(t);
+  setEnv(t, "GOOGLE_APPLICATION_CREDENTIALS", undefined);
+  setEnv(t, "SEARCH_CONSOLE_AXI_SA_KEY", key);
+  const auth = await getAuthClient();
+  assert.ok(auth.client instanceof JWT);
+  assert.equal(auth.source, "SEARCH_CONSOLE_AXI_SA_KEY");
+  const status = decode(await setupCommand(["status"]));
+  assert.equal(status.auth.account_email, "sc-agent@example.invalid");
+  assert.equal(JSON.stringify(status).includes("private_key"), false);
+  assert.equal(existsSync(join(dir, "search-console-axi", "config.json")), false);
+});
+
+test("setup check is ready with Search Console access alone", async (t) => {
+  isolateAuthEnv(t);
+  const credential = new UserRefreshClient();
+  credential.request = async ({ url }) => {
+    assert.equal(url, "https://searchconsole.googleapis.com/webmasters/v3/sites");
+    return { data: { siteEntry: [{ siteUrl: "sc-domain:example.com", permissionLevel: "siteRestrictedUser" }] } };
+  };
+  const output = decode(
+    await setupCommand(["check"], {
+      authFactory: () => ({ getApplicationDefault: async () => ({ credential, projectId: null }) }),
+    }),
+  );
+  assert.equal(output.setup.status, "ready");
+  assert.deepEqual(output.sites, [{ site_url: "sc-domain:example.com", permission: "siteRestrictedUser" }]);
+});
+
+test("empty Search Console site lists explain no resources may exist", async (t) => {
+  isolateAuthEnv(t);
+  const auth = mockAuth(async () => ({ data: { siteEntry: [] } }));
+  const expected = "No Search Console sites visible to this account - grant access as in step 4, or none exist.";
+  const home = decode(await runHome(auth));
+  assert.equal(home.sites, expected);
+
+  const credential = new UserRefreshClient();
+  credential.request = async () => ({ data: { siteEntry: [] } });
+  const check = decode(
+    await setupCommand(["check"], {
+      authFactory: () => ({ getApplicationDefault: async () => ({ credential, projectId: null }) }),
+    }),
+  );
+  assert.match(check.setup.missing[0], /No verified Search Console sites/);
+});
+
+test("disabled Search Console APIs produce enable-project guidance for both Google error shapes", async (t) => {
+  isolateAuthEnv(t);
+  const failures = [
+    {
+      message: "API disabled",
+      details: [
+        {
+          reason: "SERVICE_DISABLED",
+          metadata: { service: "searchconsole.googleapis.com", consumer: "projects/12345" },
+        },
+      ],
+    },
+    {
+      message: "Google Search Console API has not been used in project 67890 before or it is disabled",
+      errors: [{ reason: "accessNotConfigured" }],
+    },
+  ];
+  for (const [index, googleError] of failures.entries()) {
+    const failRequest = async () => {
+      throw Object.assign(new Error("forbidden"), { response: { status: 403, data: { error: googleError } } });
+    };
+    const auth = mockAuth(failRequest);
+    const credential = new UserRefreshClient();
+    credential.request = failRequest;
+    const setup = decode(
+      await setupCommand(["check"], {
+        authFactory: () => ({ getApplicationDefault: async () => ({ credential, projectId: null }) }),
+      }),
+    );
+    assert.match(setup.setup.missing[0], /Enable /);
+    assert.match(setup.setup.missing[0], index === 0 ? /searchconsole\.googleapis\.com/ : /Google Search Console API/);
+    assert.match(setup.setup.missing[0], index === 0 ? /12345/ : /67890/);
+    const home = decode(await runHome(auth));
+    assert.match(home.error, /Enable /);
+    await assert.rejects(inspectUrl(auth, "https://example.com", "sc-domain:example.com"), /Enable /);
+  }
+});
+
+test("ordinary Search Console 403 errors retain access-denied guidance", async (t) => {
+  isolateAuthEnv(t);
+  const failRequest = async () => {
+    throw Object.assign(new Error("forbidden"), {
+      response: { status: 403, data: { error: { message: "Insufficient Permission" } } },
+    });
+  };
+  const auth = mockAuth(failRequest);
+  const credential = new UserRefreshClient();
+  credential.request = failRequest;
+  const setup = decode(
+    await setupCommand(["check"], {
+      authFactory: () => ({ getApplicationDefault: async () => ({ credential, projectId: null }) }),
+    }),
+  );
+  assert.match(setup.setup.missing[0], /Search Console access denied/);
+
+  const home = decode(await runHome(auth));
+  assert.match(home.error, /Search Console access denied/);
+  await assert.rejects(
+    inspectUrl(auth, "https://example.com", "sc-domain:example.com"),
+    /Search Console access denied/,
+  );
+});
+
+test("home reports Search Console queries, pages, and low-CTR opportunities", async () => {
+  const calls = [];
+  const auth = mockAuth(async (request) => {
+    calls.push(request);
+    if (request.url.endsWith("/sites")) return { data: { siteEntry: [{ siteUrl: "sc-domain:example.com" }] } };
+    if (request.url.includes("searchAnalytics/query"))
+      return {
+        data: { rows: [{ keys: ["https://example.com/page"], clicks: 4, impressions: 500, ctr: 0.008, position: 3 }] },
+      };
+    throw new Error("Unexpected request");
+  });
+  const output = decode(await runHome(auth));
+  assert.equal(output.tool, "search-console-axi");
+  assert.equal(output.site, "sc-domain:example.com");
+  assert.equal(output.top_queries.length, 1);
+  assert.equal(output.top_pages.length, 1);
+  assert.equal(output.low_ctr_opportunities.length, 1);
+  assert.equal(output.totals.ctr, "0.8%");
+  assert.equal(output.totals.position, 3);
+  assert.equal(typeof output.totals.position, "number");
+  assert.equal(output.top_queries[0].ctr, "0.8%");
+  assert.equal(output.top_pages[0].position, 3);
+  assert.equal(typeof output.top_pages[0].position, "number");
+  assert.equal(output.low_ctr_opportunities[0].ctr, "0.8%");
+  assert.equal(calls.length, 5);
+  const reports = calls.filter((call) => call.url.includes("searchAnalytics/query"));
+  const dates = reports.map(({ data }) => [data.startDate, data.endDate]);
+  const orderedQueries = reports.filter(({ data }) => data.orderBy);
+  assert.deepEqual(
+    orderedQueries.map(({ data }) => [data.orderBy[0].field, data.orderBy[0].direction]).sort(),
+    [
+      ["clicks", "descending"],
+      ["clicks", "descending"],
+      ["impressions", "descending"],
+    ].sort(),
+  );
+  assert.equal(dates.length, 4);
+  assert.ok(dates.every(([start, end]) => /^\d{4}-\d{2}-\d{2}$/.test(start) && /^\d{4}-\d{2}-\d{2}$/.test(end)));
+  assert.ok(dates.every(([start, end]) => start === dates[0][0] && end === dates[0][1]));
+  assert.equal(Date.parse(`${dates[0][1]}T00:00:00Z`) - Date.parse(`${dates[0][0]}T00:00:00Z`), 6 * 86_400_000);
+  const pacificToday = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/Los_Angeles",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    })
+      .formatToParts(new Date())
+      .map(({ type, value }) => [type, value]),
+  );
+  const yesterday = new Date(
+    Date.UTC(Number(pacificToday.year), Number(pacificToday.month) - 1, Number(pacificToday.day)) - 86_400_000,
+  )
+    .toISOString()
+    .slice(0, 10);
+  assert.equal(dates[0][1], yesterday);
+});
+
+test("home skips unverified sites and setup check marks all-unverified accounts incomplete", async (t) => {
+  isolateAuthEnv(t);
+  const calls = [];
+  const auth = mockAuth(async (request) => {
+    calls.push(request);
+    if (request.url.endsWith("/sites"))
+      return {
+        data: {
+          siteEntry: [
+            { siteUrl: "sc-domain:unverified.example", permissionLevel: "siteUnverifiedUser" },
+            { siteUrl: "sc-domain:verified.example", permissionLevel: "siteRestrictedUser" },
+          ],
+        },
+      };
+    return { data: { rows: [] } };
+  });
+  const home = decode(await runHome(auth));
+  assert.equal(home.site, "sc-domain:verified.example");
+  assert.equal(home.sites, 1);
+  assert.equal(calls.length, 5);
+
+  const credential = new UserRefreshClient();
+  credential.request = async () => ({
+    data: { siteEntry: [{ siteUrl: "sc-domain:unverified.example", permissionLevel: "siteUnverifiedUser" }] },
+  });
+  const check = decode(
+    await setupCommand(["check"], {
+      authFactory: () => ({ getApplicationDefault: async () => ({ credential, projectId: null }) }),
+    }),
+  );
+  assert.equal(check.setup.status, "incomplete");
+  assert.match(check.setup.missing[0], /No verified Search Console sites/);
+});
+
+test("URL inspection uses the read-only index inspection endpoint", async () => {
+  let seen;
+  const output = decode(
+    await inspectUrl(
+      mockAuth(async (request) => {
+        seen = request;
+        return { data: { inspectionResult: { indexStatusResult: { verdict: "PASS" } } } };
+      }),
+      "https://example.com/page",
+      "sc-domain:example.com",
+    ),
+  );
+  assert.equal(seen.url, "https://searchconsole.googleapis.com/v1/urlInspection/index:inspect");
+  assert.deepEqual(seen.data, {
+    inspectionUrl: "https://example.com/page",
+    siteUrl: "sc-domain:example.com",
+    languageCode: "en-US",
+  });
+  assert.equal(output.indexStatusResult.verdict, "PASS");
+});
+
+test("uninstall is idempotent and removes only local config", async (t) => {
+  const { XDG_CONFIG_HOME: dir } = isolateAuthEnv(t);
+  assert.deepEqual(decode(await setupCommand(["uninstall"])).auth, {
+    status: "not configured",
+    config: "already absent",
+  });
+  const config = join(dir, "search-console-axi", "config.json");
+  const fs = await import("node:fs");
+  fs.mkdirSync(join(dir, "search-console-axi"), { recursive: true });
+  writeFileSync(config, "{}\n");
+  assert.deepEqual(decode(await setupCommand(["uninstall"])).auth, { status: "removed", config: "removed" });
+  assert.equal(existsSync(config), false);
 });

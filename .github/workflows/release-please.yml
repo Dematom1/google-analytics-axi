@@ -82,7 +82,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: package
-          path: google-analytics-axi-*.tgz
+          path: search-console-axi-*.tgz
           if-no-files-found: error
 
   publish:
@@ -115,15 +115,15 @@ jobs:
       - name: Skip if version already exists
         id: version
         run: |
-          version=$(tar -xOzf google-analytics-axi-*.tgz package/package.json | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")
-          if npm view "google-analytics-axi@$version" version >/dev/null 2>&1; then
+          version=$(tar -xOzf search-console-axi-*.tgz package/package.json | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")
+          if npm view "search-console-axi@$version" version >/dev/null 2>&1; then
             echo "already_published=true" >> "$GITHUB_OUTPUT"
           fi
       - if: ${{ steps.version.outputs.already_published != 'true' }}
         name: Stage package for approval
         run: |
-          version=$(tar -xOzf google-analytics-axi-*.tgz package/package.json | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")
-          if stage_output=$(npm stage publish ./google-analytics-axi-*.tgz --access public --provenance 2>&1); then
+          version=$(tar -xOzf search-console-axi-*.tgz package/package.json | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")
+          if stage_output=$(npm stage publish ./search-console-axi-*.tgz --access public --provenance 2>&1); then
             printf '%s\n' "$stage_output"
           elif grep -Fq '409 Conflict' <<<"$stage_output" && grep -Fq "Cannot stage previously published version \"$version\"" <<<"$stage_output"; then
             echo "Version $version is already staged; leaving the existing stage for approval."
@@ -131,12 +131,12 @@ jobs:
             printf '%s\n' "$stage_output" >&2
             exit 1
           fi
-          version=$(tar -xOzf google-analytics-axi-*.tgz package/package.json | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")
+          version=$(tar -xOzf search-console-axi-*.tgz package/package.json | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")
           stage_id=$(printf '%s\n' "$stage_output" | sed -nE 's/.*staged with id ([^)]*).*/\1/p' | tail -n1)
           stage_id=${stage_id:-unavailable}
           {
             echo "Stage id: $stage_id"
-            echo "Package: google-analytics-axi"
+            echo "Package: search-console-axi"
             echo "Version: $version"
             echo "Waiting for approval: run axi-approve"
           } >> "$GITHUB_STEP_SUMMARY"

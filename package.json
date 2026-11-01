@@ -1,16 +1,16 @@
 {
-  "name": "google-analytics-axi",
+  "name": "search-console-axi",
   "version": "0.1.0",
-  "description": "Read-only Google Analytics 4 and Search Console CLI for agents",
+  "description": "Read-only Google Search Console CLI for agents",
   "type": "module",
   "license": "MIT",
   "bin": {
-    "google-analytics-axi": "./dist/bin/google-analytics-axi.js"
+    "search-console-axi": "./dist/bin/search-console-axi.js"
   },
   "files": [
     "dist/bin",
     "dist/src",
-    "skills/google-analytics-axi",
+    "skills/search-console-axi",
     "LICENSE",
     "README.md"
   ],
@@ -18,7 +18,7 @@
     "access": "public"
   },
   "engines": {
-    "node": "^20.19.0 || >=22.12.0"
+    "node": ">=22.12.0"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -30,7 +30,8 @@
   },
   "dependencies": {
     "@toon-format/toon": "2.3.1",
-    "axi-sdk-js": "0.1.13"
+    "axi-sdk-js": "0.1.13",
+    "google-auth-library": "^11.3.2"
   },
   "devDependencies": {
     "@eslint/js": "9.39.5",

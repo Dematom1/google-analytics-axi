@@ -5,7 +5,7 @@
   "packages": {
     ".": {
       "release-type": "node",
-      "package-name": "google-analytics-axi"
+      "package-name": "search-console-axi"
     }
   }
 }
