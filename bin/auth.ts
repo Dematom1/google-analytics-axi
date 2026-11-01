@@ -91,15 +91,15 @@ function parseServiceAccount(data: unknown): ServiceAccount | undefined {
   };
 }
 
-function readServiceAccount(path: string): ServiceAccount {
+function readServiceAccount(path: string, source: string): ServiceAccount {
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(path, "utf8"));
   } catch {
-    return fail("Service-account key file is unreadable or invalid JSON");
+    return fail(`${source} is unreadable or contains invalid JSON`);
   }
   const key = parseServiceAccount(parsed);
-  if (!key) throw new Error("File is not a valid Google service-account key");
+  if (!key) throw new Error(`${source} does not contain a valid Google service-account key`);
   return key;
 }
 
@@ -115,10 +115,12 @@ export async function getAuthClient(options: ProviderOptions = {}): Promise<Auth
     } catch {
       throw new Error("GOOGLE_ANALYTICS_AXI_SA_KEY must contain valid service-account JSON");
     }
+    if (!serviceAccount)
+      throw new Error("GOOGLE_ANALYTICS_AXI_SA_KEY does not contain a valid Google service-account key");
   } else if (credentialsPath) {
-    serviceAccount = readServiceAccount(credentialsPath);
+    serviceAccount = readServiceAccount(credentialsPath, "GOOGLE_APPLICATION_CREDENTIALS");
   } else if (configuredPath) {
-    serviceAccount = readServiceAccount(configuredPath);
+    serviceAccount = readServiceAccount(configuredPath, "Configured service-account key file");
   }
   const source =
     serviceAccountJson !== undefined
@@ -215,7 +217,10 @@ async function authStatus(quotaProject?: string, providerOptions: ProviderOption
       return result({ auth: { status: "not configured", type: "none" }, setup: setupInstructions() });
     if (
       error instanceof Error &&
-      (error.message.startsWith("Service-account") || error.message.startsWith("File is not"))
+      (error.message.startsWith("Service-account") ||
+        error.message.startsWith("GOOGLE_ANALYTICS_AXI_SA_KEY") ||
+        error.message.startsWith("GOOGLE_APPLICATION_CREDENTIALS") ||
+        error.message.startsWith("Configured service-account"))
     )
       return result({ auth: { status: "invalid", type: "service_account", error: error.message } });
     throw error;
@@ -258,7 +263,7 @@ export async function setupCommand(args: string[], providerOptions: ProviderOpti
     const [path] = positionals;
     if (positionals.length !== 1 || !path)
       throw new Error("usage: google-analytics-axi setup service-account <key.json> [--quota-project <project>]");
-    const key = readServiceAccount(path);
+    const key = readServiceAccount(path, "Service-account key file");
     saveConfig({
       ...readConfig(),
       serviceAccountPath: resolve(path),

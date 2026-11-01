@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Dematom1/google-analytics-axi/actions/workflows/ci.yml/badge.svg)](https://github.com/Dematom1/google-analytics-axi/actions/workflows/ci.yml) [![Platform: Linux and macOS](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-blue)](#)
 
-Read-only Google Analytics 4 and Search Console for agents. `google-analytics-axi` is an [AXI](https://github.com/kunchenguid/axi) CLI. Output uses compact [TOON](https://toonformat.dev/) format.
+Read-only Google Analytics 4 and Search Console for agents. `google-analytics-axi` is an [AXI](https://github.com/kunchenguid/axi) CLI. Output uses compact [TOON](https://toonformat.dev/) format. Requires Node.js 22.12 or newer.
 
 ```sh
 npm install

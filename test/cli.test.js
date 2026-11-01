@@ -132,6 +132,38 @@ test("status explains both ADC setup paths when credentials are missing", async 
   assert.ok(output.setup.some((line) => line.includes("Google Search Console API")));
 });
 
+test("bare setup reports missing credentials rather than treating setup as an argument", async (t) => {
+  const dir = temp(t);
+  setEnv(t, "XDG_CONFIG_HOME", dir);
+  setEnv(t, "GOOGLE_APPLICATION_CREDENTIALS", undefined);
+  const output = decode(
+    await setupCommand([], {
+      authFactory: () => ({
+        getApplicationDefault: async () => {
+          throw new Error("Could not load the default credentials");
+        },
+      }),
+    }),
+  );
+  assert.deepEqual(output.auth, { status: "not configured", type: "none" });
+});
+
+test("invalid service-account inputs fail at their named source without ADC fallback", async (t) => {
+  const dir = temp(t);
+  setEnv(t, "XDG_CONFIG_HOME", dir);
+  const seen = [];
+  const authFactory = factoryFor(new UserRefreshClient(), seen);
+  setEnv(t, "GOOGLE_ANALYTICS_AXI_SA_KEY", "{}");
+  await assert.rejects(getAuthClient({ authFactory }), /GOOGLE_ANALYTICS_AXI_SA_KEY/);
+  assert.equal(seen.length, 0);
+  setEnv(t, "GOOGLE_ANALYTICS_AXI_SA_KEY", undefined);
+  const path = join(dir, "not-a-service-account.json");
+  writeFileSync(path, "{}");
+  setEnv(t, "GOOGLE_APPLICATION_CREDENTIALS", path);
+  await assert.rejects(getAuthClient({ authFactory }), /GOOGLE_APPLICATION_CREDENTIALS/);
+  assert.equal(seen.length, 0);
+});
+
 test("unreadable service-account key fails without printing key data", async (t) => {
   const dir = temp(t);
   setEnv(t, "XDG_CONFIG_HOME", dir);
