@@ -126,7 +126,6 @@ export async function getAuthClient(options: ProviderOptions = {}): Promise<Auth
       throw new Error("SEARCH_CONSOLE_AXI_SA_KEY does not contain a valid Google service-account key");
   } else if (credentialsPath !== undefined) {
     if (!credentialsPath) throw new Error("GOOGLE_APPLICATION_CREDENTIALS must not be empty");
-    serviceAccount = readServiceAccount(credentialsPath, "GOOGLE_APPLICATION_CREDENTIALS");
   } else if (configuredPath) {
     serviceAccount = readServiceAccount(configuredPath, "Configured service-account key file");
   }
@@ -153,6 +152,7 @@ export async function getAuthClient(options: ProviderOptions = {}): Promise<Auth
   }
   const auth = (options.authFactory ?? ((opts) => new GoogleAuth(opts)))({
     scopes: SCOPES,
+    ...(credentialsPath ? { keyFile: credentialsPath } : {}),
     ...(quotaOverride ? { clientOptions: { quotaProjectId: quotaOverride } } : {}),
   });
   let credential: AuthClient;
@@ -169,13 +169,24 @@ export async function getAuthClient(options: ProviderOptions = {}): Promise<Auth
     return {
       client: credential,
       type: "authorized_user",
-      source: "ADC",
+      source,
       ...((quotaOverride ?? credential.quotaProjectId)
         ? { quotaProjectId: quotaOverride ?? credential.quotaProjectId }
         : {}),
       ...(projectId ? { projectId } : {}),
     };
-  throw new Error("Unsupported Google ADC type; use authorized_user or service_account credentials");
+  if (credential instanceof JWT)
+    return {
+      client: credential,
+      type: "service_account",
+      source,
+      ...(credential.email ? { email: credential.email } : {}),
+      ...((quotaOverride ?? credential.quotaProjectId)
+        ? { quotaProjectId: quotaOverride ?? credential.quotaProjectId }
+        : {}),
+      ...(projectId ? { projectId } : {}),
+    };
+  throw new Error("Unsupported Google credentials type; use authorized_user or service_account credentials");
 }
 
 function setupGuideOutput(missing: string[], status = "not configured"): string {

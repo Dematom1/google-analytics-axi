@@ -66,6 +66,29 @@ test("ADC requests only the Search Console read-only scope", async (t) => {
   assert.deepEqual(options.scopes, scopes);
 });
 
+test("GOOGLE_APPLICATION_CREDENTIALS accepts authorized-user ADC files", async (t) => {
+  const dir = temp(t);
+  setEnv(t, "XDG_CONFIG_HOME", dir);
+  const credentialsPath = join(dir, "adc.json");
+  writeFileSync(
+    credentialsPath,
+    JSON.stringify({ type: "authorized_user", client_id: "client", client_secret: "secret", refresh_token: "refresh" }),
+  );
+  setEnv(t, "GOOGLE_APPLICATION_CREDENTIALS", credentialsPath);
+  setEnv(t, "SEARCH_CONSOLE_AXI_SA_KEY", undefined);
+  const credential = new UserRefreshClient();
+  let options;
+  const auth = await getAuthClient({
+    authFactory: (opts) => {
+      options = opts;
+      return { getApplicationDefault: async () => ({ credential, projectId: null }) };
+    },
+  });
+  assert.equal(options.keyFile, credentialsPath);
+  assert.equal(auth.type, "authorized_user");
+  assert.equal(auth.source, "GOOGLE_APPLICATION_CREDENTIALS");
+});
+
 test("service-account JSON env takes precedence without persisting or printing its key", async (t) => {
   const dir = temp(t);
   setEnv(t, "XDG_CONFIG_HOME", dir);
@@ -109,6 +132,36 @@ test("empty Search Console site lists explain no resources may exist", async () 
     }),
   );
   assert.equal(check.setup.missing[0], expected);
+});
+
+test("disabled Search Console APIs produce enable-project guidance for both Google error shapes", async () => {
+  const failures = [
+    {
+      message: "API disabled",
+      details: [{ reason: "SERVICE_DISABLED", metadata: { service: "searchconsole.googleapis.com", consumer: "projects/12345" } }],
+    },
+    {
+      message: "Google Search Console API has not been used in project 67890 before or it is disabled",
+      errors: [{ reason: "accessNotConfigured" }],
+    },
+  ];
+  for (const [index, googleError] of failures.entries()) {
+    const failRequest = async () => {
+      throw Object.assign(new Error("forbidden"), { response: { status: 403, data: { error: googleError } } });
+    };
+    const auth = mockAuth(failRequest);
+    const credential = new UserRefreshClient();
+    credential.request = failRequest;
+    const setup = decode(await setupCommand(["check"], {
+      authFactory: () => ({ getApplicationDefault: async () => ({ credential, projectId: null }) }),
+    }));
+    assert.match(setup.setup.missing[0], /Enable /);
+    assert.match(setup.setup.missing[0], index === 0 ? /searchconsole\.googleapis\.com/ : /Google Search Console API/);
+    assert.match(setup.setup.missing[0], index === 0 ? /12345/ : /67890/);
+    const home = decode(await runHome(auth));
+    assert.match(home.error, /Enable /);
+    await assert.rejects(inspectUrl(auth, "https://example.com", "sc-domain:example.com"), /Enable /);
+  }
 });
 
 test("home reports Search Console queries, pages, and low-CTR opportunities", async () => {

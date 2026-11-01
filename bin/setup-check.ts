@@ -23,9 +23,47 @@ export const setupGuide = [
 
 type Site = { siteUrl: string; permissionLevel?: string };
 
+function apiDisabledMessage(error: unknown): string | undefined {
+  if (!error || typeof error !== "object" || !("response" in error) || !error.response || typeof error.response !== "object")
+    return undefined;
+  const response = error.response;
+  if (!("status" in response) || response.status !== 403 || !("data" in response)) return undefined;
+  const body = response.data;
+  if (!body || typeof body !== "object" || !("error" in body) || !body.error || typeof body.error !== "object")
+    return undefined;
+  const googleError = body.error;
+  const details = "details" in googleError && Array.isArray(googleError.details) ? googleError.details : [];
+  const legacy = "errors" in googleError && Array.isArray(googleError.errors) ? googleError.errors : [];
+  const reasons = [
+    ...details.flatMap((detail) => detail && typeof detail === "object" && "reason" in detail ? [detail.reason] : []),
+    ...legacy.flatMap((detail) => detail && typeof detail === "object" && "reason" in detail ? [detail.reason] : []),
+  ];
+  if (!reasons.some((reason) => reason === "SERVICE_DISABLED" || reason === "accessNotConfigured")) return undefined;
+  const metadata = details.find(
+    (detail) => detail && typeof detail === "object" && "metadata" in detail && detail.metadata && typeof detail.metadata === "object",
+  );
+  const service = metadata && "metadata" in metadata && metadata.metadata && "service" in metadata.metadata
+    ? metadata.metadata.service
+    : undefined;
+  const consumer = metadata && "metadata" in metadata && metadata.metadata && "consumer" in metadata.metadata
+    ? metadata.metadata.consumer
+    : undefined;
+  const message = "message" in googleError && typeof googleError.message === "string" ? googleError.message : "";
+  const api = typeof service === "string" ? service : message.match(/[\w.-]+\.googleapis\.com/)?.[0] ?? "Google Search Console API";
+  const project =
+    (typeof consumer === "string" ? consumer.match(/projects\/([^/]+)/)?.[1] : undefined) ??
+    message.match(/project\s+([\w.-]+)/i)?.[1] ??
+    "your Google Cloud project";
+  return `Enable ${api} in ${project} to use Search Console.`;
+}
+
 async function request(auth: AuthProvider, url: string, method = "GET", data?: object): Promise<unknown> {
-  const response = await auth.client.request({ url, method, ...(data ? { data } : {}) });
-  return response.data;
+  try {
+    const response = await auth.client.request({ url, method, ...(data ? { data } : {}) });
+    return response.data;
+  } catch (error) {
+    throw new Error(apiDisabledMessage(error) ?? (error instanceof Error ? error.message : "Google API request failed"));
+  }
 }
 
 function searchDateRange(): { startDate: string; endDate: string } {
@@ -85,9 +123,11 @@ export async function runSetupCheck(auth: AuthProvider): Promise<string> {
         ? error.response.status
         : undefined;
     const message =
-      status === 403
-        ? "Search Console access denied. Add the authenticated account in Search Console Settings > Users and permissions."
-        : "Search Console API request failed. Check API access and network connectivity.";
+      error instanceof Error && error.message.startsWith("Enable ")
+        ? error.message
+        : status === 403
+          ? "Search Console access denied. Add the authenticated account in Search Console Settings > Users and permissions."
+          : "Search Console API request failed. Check API access and network connectivity.";
     return encode({
       auth: { type: auth.type, source: auth.source },
       setup: { status: "incomplete", missing: [message], guide: setupGuide },
@@ -164,12 +204,12 @@ export async function runHome(auth: AuthProvider): Promise<string> {
         "Run search-console-axi inspect <url> --site <site> to check indexing.",
       ],
     });
-  } catch {
+  } catch (error) {
     return encode({
       tool: "search-console-axi",
       status: "error",
+      ...(error instanceof Error && error.message.startsWith("Enable ") ? { error: error.message } : {}),
       help: ["Run search-console-axi setup check for access guidance."],
-    });
   }
 }
 
