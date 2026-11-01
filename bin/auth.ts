@@ -1,17 +1,18 @@
-import { Entry } from "@napi-rs/keyring";
-import { createServer } from "node:http";
-import { readFileSync, unlinkSync, writeFileSync, mkdirSync, existsSync, renameSync } from "node:fs";
+import { GoogleAuth, JWT, UserRefreshClient, type AuthClient, type GoogleAuthOptions } from "google-auth-library";
+import { encode } from "@toon-format/toon";
+import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { randomBytes, timingSafeEqual } from "node:crypto";
-import { spawn } from "node:child_process";
 
-const SERVICE = "google-analytics-axi";
-const ACCOUNT = "google-oauth-refresh-token";
 const SCOPES = [
   "https://www.googleapis.com/auth/analytics.readonly",
   "https://www.googleapis.com/auth/webmasters.readonly",
 ];
+const NO_ADC_MESSAGE = "Could not load the default credentials";
+const QUOTA_PROJECT_APIS =
+  "Enable the Google Analytics Data API, Google Analytics Admin API, and Google Search Console API in the quota project.";
+const ADC_LOGIN =
+  "gcloud auth application-default login --client-id-file=client.json --scopes=https://www.googleapis.com/auth/analytics.readonly,https://www.googleapis.com/auth/webmasters.readonly,https://www.googleapis.com/auth/cloud-platform";
 const configDir = () =>
   process.env["XDG_CONFIG_HOME"]
     ? join(process.env["XDG_CONFIG_HOME"], "google-analytics-axi")
@@ -21,211 +22,252 @@ const fail = (message: string): never => {
   throw new Error(message);
 };
 
-export type Keychain = { getPassword(): string | null; setPassword(value: string): void; deletePassword(): boolean };
-export type OAuthOptions = {
-  clientId: string;
-  clientSecret: string;
-  keychain: Keychain;
-  openBrowser?: (url: string) => void;
+type Config = { serviceAccountPath?: string; quotaProjectId?: string };
+type ServiceAccount = {
+  type: "service_account";
+  client_email: string;
+  private_key: string;
+  project_id?: string;
+  quota_project_id?: string;
+};
+type CredentialKind = "authorized_user" | "service_account";
+type AuthFactory = (options: GoogleAuthOptions) => Pick<GoogleAuth, "getApplicationDefault" | "getClient">;
+type ProviderOptions = { quotaProject?: string; authFactory?: AuthFactory };
+export type AuthProvider = {
+  client: AuthClient;
+  type: CredentialKind;
+  source: "GOOGLE_ANALYTICS_AXI_SA_KEY" | "GOOGLE_APPLICATION_CREDENTIALS" | "service-account-path" | "ADC";
+  email?: string;
+  quotaProjectId?: string;
 };
 
-function systemKeychain(): Keychain {
-  try {
-    return new Entry(SERVICE, ACCOUNT);
-  } catch {
-    return fail("OS keychain is unavailable; install and unlock Secret Service (Linux) or use macOS Keychain");
-  }
-}
-
-function openBrowser(url: string): void {
-  const command = process.platform === "darwin" ? "open" : "xdg-open";
-  const child = spawn(command, [url], { detached: true, stdio: "ignore" });
-  child.on("error", () => {});
-  child.unref();
-}
-
-function saveConfig(config: { serviceAccountPath?: string; authType?: string }): void {
-  mkdirSync(configDir(), { recursive: true, mode: 0o700 });
-  const temporaryFile = `${configFile()}.tmp`;
-  writeFileSync(temporaryFile, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
-  renameSync(temporaryFile, configFile());
-}
-function readConfig(): { serviceAccountPath?: string; authType?: string } {
+function readConfig(): Config {
   try {
     const data: unknown = JSON.parse(readFileSync(configFile(), "utf8"));
     if (data && typeof data === "object") {
-      const config: { serviceAccountPath?: string; authType?: string } = {};
+      const config: Config = {};
       if ("serviceAccountPath" in data && typeof data.serviceAccountPath === "string")
         config.serviceAccountPath = data.serviceAccountPath;
-      if ("authType" in data && typeof data.authType === "string") config.authType = data.authType;
+      if ("quotaProjectId" in data && typeof data.quotaProjectId === "string")
+        config.quotaProjectId = data.quotaProjectId;
       return config;
     }
   } catch {
-    /* No configured credential. */
+    /* No configured path or quota project. */
   }
   return {};
 }
 
-export async function runOAuthSetup(options: OAuthOptions): Promise<void> {
-  const server = createServer();
-  await new Promise<void>((resolve, reject) => server.listen(0, "127.0.0.1", resolve).once("error", reject));
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("Could not open the local OAuth callback");
-  const redirectUri = `http://127.0.0.1:${address.port}/oauth2callback`;
-  const state = randomBytes(24).toString("hex");
-  const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
-  authUrl.search = new URLSearchParams({
-    client_id: options.clientId,
-    redirect_uri: redirectUri,
-    response_type: "code",
-    scope: SCOPES.join(" "),
-    access_type: "offline",
-    prompt: "consent",
-    state,
-  }).toString();
-  const callback = new Promise<string>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("Google OAuth timed out")), 180_000);
-    server.on("request", (request, response) => {
-      const url = new URL(request.url ?? "/", redirectUri);
-      if (url.pathname !== "/oauth2callback") {
-        response.writeHead(404).end();
-        return;
-      }
-      const got = Buffer.from(url.searchParams.get("state") ?? "");
-      const expected = Buffer.from(state);
-      if (got.length !== expected.length || !timingSafeEqual(got, expected)) {
-        response.writeHead(400).end("OAuth state mismatch");
-        return;
-      }
-      const code = url.searchParams.get("code");
-      const error = url.searchParams.get("error");
-      response
-        .writeHead(code ? 200 : 400, { "content-type": "text/plain" })
-        .end(code ? "Authentication complete. You may close this window." : "Authentication was not completed.");
-      clearTimeout(timer);
-      if (code) resolve(code);
-      else reject(new Error(error ? "Google OAuth was denied" : "Google did not return an authorization code"));
-    });
-  });
+function saveConfig(config: Config): void {
+  mkdirSync(configDir(), { recursive: true, mode: 0o700 });
+  const path = configFile();
+  const temporaryFile = `${path}.tmp`;
+  writeFileSync(temporaryFile, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+  renameSync(temporaryFile, path);
+}
+
+function parseServiceAccount(data: unknown): ServiceAccount | undefined {
+  if (
+    !data ||
+    typeof data !== "object" ||
+    !("type" in data) ||
+    data.type !== "service_account" ||
+    !("client_email" in data) ||
+    typeof data.client_email !== "string" ||
+    !data.client_email.trim() ||
+    !("private_key" in data) ||
+    typeof data.private_key !== "string" ||
+    !data.private_key.trim()
+  )
+    return undefined;
+  return {
+    type: "service_account",
+    client_email: data.client_email,
+    private_key: data.private_key,
+    ...("project_id" in data && typeof data.project_id === "string" ? { project_id: data.project_id } : {}),
+    ...("quota_project_id" in data && typeof data.quota_project_id === "string"
+      ? { quota_project_id: data.quota_project_id }
+      : {}),
+  };
+}
+
+function readServiceAccount(path: string): ServiceAccount {
+  let parsed: unknown;
   try {
-    (options.openBrowser ?? openBrowser)(authUrl.toString());
-    const code = await callback;
-    const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        code,
-        client_id: options.clientId,
-        client_secret: options.clientSecret,
-        redirect_uri: redirectUri,
-        grant_type: "authorization_code",
-      }),
-    });
-    if (!tokenResponse.ok) throw new Error("Google token exchange failed; check the OAuth client configuration");
-    const data: unknown = await tokenResponse.json();
-    if (
-      !data ||
-      typeof data !== "object" ||
-      !("refresh_token" in data) ||
-      typeof data.refresh_token !== "string" ||
-      !data.refresh_token.trim()
-    )
-      throw new Error("Google did not return a refresh token; retry setup and approve offline access");
-    const previousToken = options.keychain.getPassword();
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return fail("Service-account key file is unreadable or invalid JSON");
+  }
+  const key = parseServiceAccount(parsed);
+  if (!key) throw new Error("File is not a valid Google service-account key");
+  return key;
+}
+
+export async function getAuthClient(options: ProviderOptions = {}): Promise<AuthProvider> {
+  const config = readConfig();
+  const serviceAccountJson = process.env["GOOGLE_ANALYTICS_AXI_SA_KEY"];
+  const credentialsPath = process.env["GOOGLE_APPLICATION_CREDENTIALS"];
+  const configuredPath = config.serviceAccountPath;
+  let serviceAccount: ServiceAccount | undefined;
+  if (serviceAccountJson !== undefined) {
     try {
-      options.keychain.setPassword(data.refresh_token);
+      serviceAccount = parseServiceAccount(JSON.parse(serviceAccountJson));
     } catch {
-      throw new Error(
-        "Could not store the Google refresh token in the OS keychain; check that the keychain is available and unlocked",
-      );
+      throw new Error("GOOGLE_ANALYTICS_AXI_SA_KEY must contain valid service-account JSON");
     }
-    try {
-      saveConfig({ authType: "oauth" });
-    } catch (error) {
-      try {
-        if (previousToken) options.keychain.setPassword(previousToken);
-        else options.keychain.deletePassword();
-      } catch {}
-      throw error;
-    }
-  } finally {
-    server.close();
+  } else if (credentialsPath) {
+    serviceAccount = readServiceAccount(credentialsPath);
+  } else if (configuredPath) {
+    serviceAccount = readServiceAccount(configuredPath);
+  }
+  const source =
+    serviceAccountJson !== undefined
+      ? "GOOGLE_ANALYTICS_AXI_SA_KEY"
+      : credentialsPath
+        ? "GOOGLE_APPLICATION_CREDENTIALS"
+        : configuredPath
+          ? "service-account-path"
+          : "ADC";
+  const quotaOverride = options.quotaProject ?? process.env["GOOGLE_CLOUD_QUOTA_PROJECT"] ?? config.quotaProjectId;
+  if (serviceAccount) {
+    const credential = new JWT({ email: serviceAccount.client_email, key: serviceAccount.private_key, scopes: SCOPES });
+    credential.quotaProjectId = quotaOverride ?? serviceAccount.quota_project_id;
+    return {
+      client: credential,
+      type: "service_account",
+      source,
+      email: serviceAccount.client_email,
+      ...(credential.quotaProjectId ? { quotaProjectId: credential.quotaProjectId } : {}),
+    };
+  }
+  const auth = (options.authFactory ?? ((opts) => new GoogleAuth(opts)))({
+    scopes: SCOPES,
+    ...(quotaOverride ? { clientOptions: { quotaProjectId: quotaOverride } } : {}),
+  });
+  let credential: AuthClient;
+  try {
+    ({ credential } = await auth.getApplicationDefault());
+  } catch (error) {
+    if (error instanceof Error && error.message.includes(NO_ADC_MESSAGE))
+      throw new Error("Google Application Default Credentials are not configured");
+    throw error;
+  }
+  if (quotaOverride) credential.quotaProjectId = quotaOverride;
+  if (credential instanceof UserRefreshClient)
+    return {
+      client: credential,
+      type: "authorized_user",
+      source: "ADC",
+      ...((quotaOverride ?? credential.quotaProjectId)
+        ? { quotaProjectId: quotaOverride ?? credential.quotaProjectId }
+        : {}),
+    };
+  throw new Error("Unsupported Google ADC type; use authorized_user or service_account credentials");
+}
+
+const agentSetup = [
+  "Recommended for agents and CI:",
+  "1. Create a service account in a dedicated Google Cloud project and enable the Google Analytics Data API, Google Analytics Admin API, and Google Search Console API.",
+  "2. Create a JSON key and add the service account as Viewer on the GA4 property and as a user in Search Console.",
+  "3. Set GOOGLE_ANALYTICS_AXI_SA_KEY to the JSON string, set GOOGLE_APPLICATION_CREDENTIALS to its path, or run google-analytics-axi setup service-account <key.json>.",
+];
+const personalSetup = [
+  "For personal ADC:",
+  "Create a Google Cloud project, enable the required APIs, configure the OAuth consent screen and add your own Desktop OAuth client, then run:",
+  ADC_LOGIN,
+  "Set the quota project with: gcloud auth application-default set-quota-project <project>.",
+];
+
+function setupInstructions(): string[] {
+  return [...agentSetup, QUOTA_PROJECT_APIS, ...personalSetup];
+}
+
+function result(data: object): string {
+  return encode(data);
+}
+
+async function authStatus(quotaProject?: string, providerOptions: ProviderOptions = {}): Promise<string> {
+  try {
+    const auth = await getAuthClient({ ...providerOptions, quotaProject });
+    const help =
+      auth.type === "authorized_user" && !auth.quotaProjectId
+        ? [
+            "Set a quota project with `gcloud auth application-default set-quota-project <project>`.",
+            QUOTA_PROJECT_APIS,
+          ]
+        : [];
+    return result({
+      auth: {
+        status: "configured",
+        type: auth.type,
+        source: auth.source,
+        ...(auth.email ? { account_email: auth.email } : {}),
+        quota_project: auth.quotaProjectId ?? "none",
+      },
+      help,
+    });
+  } catch (error) {
+    const config = readConfig();
+    const hasCredentialPath = Boolean(config.serviceAccountPath || process.env["GOOGLE_APPLICATION_CREDENTIALS"]);
+    if (error instanceof Error && error.message === "Google Application Default Credentials are not configured")
+      return result({ auth: { status: "not configured", type: "none" }, setup: setupInstructions() });
+    if (!hasCredentialPath && error instanceof Error && error.message.includes(NO_ADC_MESSAGE))
+      return result({ auth: { status: "not configured", type: "none" }, setup: setupInstructions() });
+    if (
+      error instanceof Error &&
+      (error.message.startsWith("Service-account") || error.message.startsWith("File is not"))
+    )
+      return result({ auth: { status: "invalid", type: "service_account", error: error.message } });
+    throw error;
   }
 }
 
-export async function setupCommand(args: string[]): Promise<string> {
-  const [first] = args;
+export async function setupCommand(args: string[], providerOptions: ProviderOptions = {}): Promise<string> {
+  const [first, ...rest] = args;
   if (first === "--help" || first === "-h")
-    return "usage: google-analytics-axi setup [--client-id <id> --client-secret <secret>] | service-account <key.json> | status | uninstall\nOAuth client credentials can also be set with GOOGLE_ANALYTICS_AXI_CLIENT_ID and GOOGLE_ANALYTICS_AXI_CLIENT_SECRET.\n";
-  const action = first && !first.startsWith("-") ? first : "oauth";
-  const rest = action === "oauth" ? args : args.slice(1);
+    return "usage: google-analytics-axi setup [--quota-project <project>] | status | service-account <key.json> | uninstall\n";
+  const action = first && !first.startsWith("-") ? first : "setup";
+  const operands = action === "setup" ? args : rest;
+  let quotaProject: string | undefined;
+  const positionals: string[] = [];
+  for (let index = 0; index < operands.length; index++) {
+    const value = operands[index];
+    if (value === "--quota-project") {
+      const next = operands[++index];
+      if (!next || next.startsWith("-")) fail("--quota-project requires a project ID");
+      quotaProject = next;
+    } else if (value?.startsWith("-")) {
+      fail(`unknown setup option '${value}'`);
+    } else if (value) positionals.push(value);
+  }
+
   if (action === "status") {
-    if (rest.length) fail("usage: google-analytics-axi setup status");
-    const config = readConfig();
-    let stored = false;
-    if (config.authType === "oauth") {
-      try {
-        stored = Boolean(systemKeychain().getPassword());
-      } catch {
-        throw new Error("OS keychain is unavailable; install and unlock Secret Service (Linux) or use macOS Keychain");
-      }
-    }
-    const serviceAccount =
-      config.authType === "service-account" &&
-      Boolean(config.serviceAccountPath && existsSync(config.serviceAccountPath));
-    return `auth:\n  status: ${stored || serviceAccount ? "configured" : "not configured"}\n  method: ${stored ? "oauth" : serviceAccount ? "service-account" : "none"}\n`;
+    if (positionals.length) fail("usage: google-analytics-axi setup status [--quota-project <project>]");
+    return authStatus(quotaProject, providerOptions);
   }
   if (action === "uninstall") {
-    if (rest.length) fail("usage: google-analytics-axi setup uninstall");
-    if (readConfig().authType === "oauth") systemKeychain().deletePassword();
+    if (positionals.length || quotaProject) fail("usage: google-analytics-axi setup uninstall");
     try {
       unlinkSync(configFile());
+      return result({ auth: { status: "removed", config: "removed" } });
     } catch {
-      /* Already absent. */
+      return result({ auth: { status: "not configured", config: "already absent" } });
     }
-    return "auth:\n  status: removed\n";
   }
   if (action === "service-account") {
-    if (rest.length !== 1) fail("usage: google-analytics-axi setup service-account <key.json>");
-    const path = rest[0];
-    if (!path) throw new Error("service-account key path is required");
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(readFileSync(path, "utf8"));
-    } catch {
-      fail("service-account key file is unreadable or invalid JSON");
-    }
-    if (
-      !parsed ||
-      typeof parsed !== "object" ||
-      !("type" in parsed) ||
-      parsed.type !== "service_account" ||
-      !("client_email" in parsed) ||
-      typeof parsed.client_email !== "string" ||
-      !parsed.client_email.trim() ||
-      !("private_key" in parsed) ||
-      typeof parsed.private_key !== "string" ||
-      !parsed.private_key.trim()
-    )
-      fail("file is not a valid Google service-account key");
-    saveConfig({ authType: "service-account", serviceAccountPath: resolve(path) });
-    return "auth:\n  status: configured\n  method: service-account\n";
+    const [path] = positionals;
+    if (positionals.length !== 1 || !path)
+      throw new Error("usage: google-analytics-axi setup service-account <key.json> [--quota-project <project>]");
+    const key = readServiceAccount(path);
+    saveConfig({
+      ...readConfig(),
+      serviceAccountPath: resolve(path),
+      ...(quotaProject ? { quotaProjectId: quotaProject } : {}),
+    });
+    return result({ auth: { status: "configured", type: "service_account", account_email: key.client_email } });
   }
-  let clientId: string | undefined;
-  let clientSecret: string | undefined;
-  while (rest.length) {
-    const flag = rest.shift();
-    if (flag === "--client-id") clientId = rest.shift();
-    else if (flag === "--client-secret") clientSecret = rest.shift();
-    else fail(`unknown setup option '${flag}'`);
-  }
-  clientId ??= process.env["GOOGLE_ANALYTICS_AXI_CLIENT_ID"];
-  clientSecret ??= process.env["GOOGLE_ANALYTICS_AXI_CLIENT_SECRET"];
-  if (!clientId || !clientSecret)
-    throw new Error(
-      "provide --client-id and --client-secret or set GOOGLE_ANALYTICS_AXI_CLIENT_ID and GOOGLE_ANALYTICS_AXI_CLIENT_SECRET",
-    );
-  const keychain = systemKeychain();
-  await runOAuthSetup({ clientId, clientSecret, keychain });
-  return "auth:\n  status: configured\n  method: oauth\n  stored: OS keychain\n";
+  if (action !== "setup") fail(`unknown setup action '${action}'`);
+  if (positionals.length) fail("usage: google-analytics-axi setup [--quota-project <project>]");
+  if (quotaProject) saveConfig({ ...readConfig(), quotaProjectId: quotaProject });
+  return authStatus(quotaProject, providerOptions);
 }
