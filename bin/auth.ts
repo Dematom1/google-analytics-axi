@@ -1,21 +1,17 @@
 import { GoogleAuth, JWT, UserRefreshClient, type AuthClient, type GoogleAuthOptions } from "google-auth-library";
 import { encode } from "@toon-format/toon";
-import { runSetupCheck, setupGuide, type SetupCheckOptions } from "./setup-check.js";
+import { inspectUrl, runSetupCheck, setupGuide } from "./setup-check.js";
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
-const SCOPES = [
-  "https://www.googleapis.com/auth/analytics.readonly",
-  "https://www.googleapis.com/auth/webmasters.readonly",
-];
+const SCOPES = ["https://www.googleapis.com/auth/webmasters.readonly"];
 const NO_ADC_MESSAGE = "Could not load the default credentials";
-const QUOTA_PROJECT_APIS =
-  "Enable the Google Analytics Data API, Google Analytics Admin API, and Google Search Console API in the quota project.";
+const QUOTA_PROJECT_APIS = "Enable the Google Search Console API in the quota project.";
 const configDir = () =>
   process.env["XDG_CONFIG_HOME"]
-    ? join(process.env["XDG_CONFIG_HOME"], "google-analytics-axi")
-    : join(homedir(), ".config", "google-analytics-axi");
+    ? join(process.env["XDG_CONFIG_HOME"], "search-console-axi")
+    : join(homedir(), ".config", "search-console-axi");
 const configFile = () => join(configDir(), "config.json");
 const fail = (message: string): never => {
   throw new Error(message);
@@ -35,7 +31,7 @@ type ProviderOptions = { quotaProject?: string; authFactory?: AuthFactory };
 export type AuthProvider = {
   client: AuthClient;
   type: CredentialKind;
-  source: "GOOGLE_ANALYTICS_AXI_SA_KEY" | "GOOGLE_APPLICATION_CREDENTIALS" | "service-account-path" | "ADC";
+  source: "SEARCH_CONSOLE_AXI_SA_KEY" | "GOOGLE_APPLICATION_CREDENTIALS" | "service-account-path" | "ADC";
   email?: string;
   quotaProjectId?: string;
   projectId?: string;
@@ -116,7 +112,7 @@ function readServiceAccount(path: string, source: string): ServiceAccount {
 
 export async function getAuthClient(options: ProviderOptions = {}): Promise<AuthProvider> {
   const config = readConfig();
-  const serviceAccountJson = process.env["GOOGLE_ANALYTICS_AXI_SA_KEY"];
+  const serviceAccountJson = process.env["SEARCH_CONSOLE_AXI_SA_KEY"];
   const credentialsPath = process.env["GOOGLE_APPLICATION_CREDENTIALS"];
   const configuredPath = config.serviceAccountPath;
   let serviceAccount: ServiceAccount | undefined;
@@ -124,10 +120,10 @@ export async function getAuthClient(options: ProviderOptions = {}): Promise<Auth
     try {
       serviceAccount = parseServiceAccount(JSON.parse(serviceAccountJson));
     } catch {
-      throw new Error("GOOGLE_ANALYTICS_AXI_SA_KEY must contain valid service-account JSON");
+      throw new Error("SEARCH_CONSOLE_AXI_SA_KEY must contain valid service-account JSON");
     }
     if (!serviceAccount)
-      throw new Error("GOOGLE_ANALYTICS_AXI_SA_KEY does not contain a valid Google service-account key");
+      throw new Error("SEARCH_CONSOLE_AXI_SA_KEY does not contain a valid Google service-account key");
   } else if (credentialsPath !== undefined) {
     if (!credentialsPath) throw new Error("GOOGLE_APPLICATION_CREDENTIALS must not be empty");
     serviceAccount = readServiceAccount(credentialsPath, "GOOGLE_APPLICATION_CREDENTIALS");
@@ -136,7 +132,7 @@ export async function getAuthClient(options: ProviderOptions = {}): Promise<Auth
   }
   const source =
     serviceAccountJson !== undefined
-      ? "GOOGLE_ANALYTICS_AXI_SA_KEY"
+      ? "SEARCH_CONSOLE_AXI_SA_KEY"
       : credentialsPath
         ? "GOOGLE_APPLICATION_CREDENTIALS"
         : configuredPath
@@ -186,18 +182,18 @@ function setupGuideOutput(missing: string[], status = "not configured"): string 
   return result({ auth: { status }, setup: { status: "incomplete", missing, guide: setupGuide } });
 }
 
-async function setupWithChecks(options: ProviderOptions, propertyId?: string): Promise<string> {
+async function setupWithChecks(options: ProviderOptions): Promise<string> {
   try {
     const auth = await getAuthClient(options);
-    return runSetupCheck(auth, propertyId ? { propertyId } : {});
+    return runSetupCheck(auth);
   } catch (error) {
     if (error instanceof Error && error.message === "Google Application Default Credentials are not configured")
       return setupGuideOutput([
-        "No service-account key or user ADC is configured. Load the key JSON into GOOGLE_ANALYTICS_AXI_SA_KEY or configure your own Desktop OAuth client.",
+        "No service-account key or user ADC is configured. Load the key JSON into SEARCH_CONSOLE_AXI_SA_KEY or configure your own Desktop OAuth client.",
       ]);
     if (
       error instanceof Error &&
-      (error.message.startsWith("GOOGLE_ANALYTICS_AXI_SA_KEY") ||
+      (error.message.startsWith("SEARCH_CONSOLE_AXI_SA_KEY") ||
         error.message.startsWith("GOOGLE_APPLICATION_CREDENTIALS") ||
         error.message.startsWith("Configured service-account"))
     )
@@ -236,16 +232,16 @@ async function authStatus(quotaProject?: string, providerOptions: ProviderOption
       Boolean(config.serviceAccountPath) || process.env["GOOGLE_APPLICATION_CREDENTIALS"] !== undefined;
     if (error instanceof Error && error.message === "Google Application Default Credentials are not configured")
       return setupGuideOutput([
-        "No service-account key or user ADC is configured. Load the key JSON into GOOGLE_ANALYTICS_AXI_SA_KEY or configure your own Desktop OAuth client.",
+        "No service-account key or user ADC is configured. Load the key JSON into SEARCH_CONSOLE_AXI_SA_KEY or configure your own Desktop OAuth client.",
       ]);
     if (!hasCredentialPath && error instanceof Error && error.message.includes(NO_ADC_MESSAGE))
       return setupGuideOutput([
-        "No service-account key or user ADC is configured. Load the key JSON into GOOGLE_ANALYTICS_AXI_SA_KEY or configure your own Desktop OAuth client.",
+        "No service-account key or user ADC is configured. Load the key JSON into SEARCH_CONSOLE_AXI_SA_KEY or configure your own Desktop OAuth client.",
       ]);
     if (
       error instanceof Error &&
       (error.message.startsWith("Service-account") ||
-        error.message.startsWith("GOOGLE_ANALYTICS_AXI_SA_KEY") ||
+        error.message.startsWith("SEARCH_CONSOLE_AXI_SA_KEY") ||
         error.message.startsWith("GOOGLE_APPLICATION_CREDENTIALS") ||
         error.message.startsWith("Configured service-account"))
     )
@@ -257,12 +253,12 @@ async function authStatus(quotaProject?: string, providerOptions: ProviderOption
 export async function setupCommand(args: string[], providerOptions: ProviderOptions = {}): Promise<string> {
   const [first, ...rest] = args;
   if (first === "--help" || first === "-h")
-    return "usage: google-analytics-axi setup [--quota-project <project>] | check [--property <id>] | status | service-account <key.json> | uninstall\n";
+    return "usage: search-console-axi setup [--quota-project <project>] | check | status | service-account <key.json> | uninstall\n";
   const implicitSetup = !first || first.startsWith("-");
   const action = implicitSetup ? "setup" : first;
   const operands = implicitSetup ? args : rest;
   let quotaProject: string | undefined;
-  let propertyId: string | undefined;
+  let siteUrl: string | undefined;
   const positionals: string[] = [];
   for (let index = 0; index < operands.length; index++) {
     const value = operands[index];
@@ -270,21 +266,21 @@ export async function setupCommand(args: string[], providerOptions: ProviderOpti
       const next = operands[++index];
       if (!next || next.startsWith("-")) fail("--quota-project requires a project ID");
       quotaProject = next;
-    } else if (value === "--property") {
+    } else if (value === "--site") {
       const next = operands[++index];
-      if (!next || next.startsWith("-")) fail("--property requires a GA4 property ID");
-      propertyId = next;
+      if (!next || next.startsWith("-")) fail("--site requires a Search Console site URL");
+      siteUrl = next;
     } else if (value?.startsWith("-")) {
       fail(`unknown setup option '${value}'`);
     } else if (value) positionals.push(value);
   }
 
   if (action === "status") {
-    if (positionals.length || propertyId) fail("usage: google-analytics-axi setup status [--quota-project <project>]");
+    if (positionals.length || siteUrl) fail("usage: search-console-axi setup status [--quota-project <project>]");
     return authStatus(quotaProject, providerOptions);
   }
   if (action === "uninstall") {
-    if (positionals.length || quotaProject || propertyId) fail("usage: google-analytics-axi setup uninstall");
+    if (positionals.length || quotaProject || siteUrl) fail("usage: search-console-axi setup uninstall");
     try {
       unlinkSync(configFile());
       return result({ auth: { status: "removed", config: "removed" } });
@@ -295,10 +291,10 @@ export async function setupCommand(args: string[], providerOptions: ProviderOpti
     }
   }
   if (action === "service-account") {
-    if (propertyId) fail("--property is only valid with setup check");
+    if (siteUrl) fail("--site is only valid with inspect");
     const [path] = positionals;
     if (positionals.length !== 1 || !path)
-      throw new Error("usage: google-analytics-axi setup service-account <key.json> [--quota-project <project>]");
+      throw new Error("usage: search-console-axi setup service-account <key.json> [--quota-project <project>]");
     const key = readServiceAccount(path, "Service-account key file");
     saveConfig({
       ...readConfig(),
@@ -308,11 +304,17 @@ export async function setupCommand(args: string[], providerOptions: ProviderOpti
     return result({ auth: { status: "configured", type: "service_account", account_email: key.client_email } });
   }
   if (action === "check") {
-    if (positionals.length) fail("usage: google-analytics-axi setup check [--property <id>]");
-    return setupWithChecks({ ...providerOptions, ...(quotaProject ? { quotaProject } : {}) }, propertyId);
+    if (positionals.length || siteUrl) fail("usage: search-console-axi setup check");
+    return setupWithChecks({ ...providerOptions, ...(quotaProject ? { quotaProject } : {}) });
+  }
+  if (action === "inspect") {
+    if (positionals.length !== 1 || !positionals[0] || !siteUrl)
+      fail("usage: search-console-axi setup inspect <url> --site <site>");
+    const auth = await getAuthClient({ ...providerOptions, ...(quotaProject ? { quotaProject } : {}) });
+    return inspectUrl(auth, positionals[0]!, siteUrl!);
   }
   if (action !== "setup") fail(`unknown setup action '${action}'`);
-  if (positionals.length || propertyId) fail("usage: google-analytics-axi setup [--quota-project <project>]");
+  if (positionals.length || siteUrl) fail("usage: search-console-axi setup [--quota-project <project>]");
   if (quotaProject) saveConfig({ ...readConfig(), quotaProjectId: quotaProject });
   return setupWithChecks({ ...providerOptions, ...(quotaProject ? { quotaProject } : {}) });
 }

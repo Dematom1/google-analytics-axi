@@ -1,268 +1,172 @@
-import { BetaAnalyticsDataClient } from "@google-analytics/data";
 import { encode } from "@toon-format/toon";
 import type { AuthProvider } from "./auth.js";
 
-const SCOPES = [
-  "https://www.googleapis.com/auth/analytics.readonly",
-  "https://www.googleapis.com/auth/webmasters.readonly",
-];
-
-export type SetupCheckOptions = { propertyId?: string };
-
-type ErrorInfo = { status?: number; service?: string; project?: string; serviceDisabled: boolean };
-
+const API = "https://searchconsole.googleapis.com/webmasters/v3/sites";
 export const setupGuide = [
-  { step: 1, instruction: "Create or reuse a dedicated Google Cloud project; the service account needs no IAM roles." },
+  { step: 1, instruction: "Enable the Google Search Console API in a Google Cloud project." },
+  { step: 2, instruction: "Create a service account; it needs no project-level IAM roles." },
   {
-    step: 2,
-    instruction:
-      "Enable Google Analytics Data API, Google Analytics Admin API, and Google Search Console API in that project.",
+    step: 3,
+    instruction: "Load its JSON key from your secret manager into SEARCH_CONSOLE_AXI_SA_KEY. Never commit the key.",
   },
-  { step: 3, instruction: "Create a service account, then create a JSON key for it." },
   {
     step: 4,
-    instruction: "Load the key JSON from your secret manager into GOOGLE_ANALYTICS_AXI_SA_KEY. Never commit the key.",
+    instruction:
+      "In Search Console, add the service-account email under Settings > Users and permissions with Restricted access.",
   },
   {
     step: 5,
     instruction:
-      "In GA4, open Admin > Property access management > + > Add users, enter the service-account email, untick notify, and grant Viewer.",
-  },
-  {
-    step: 6,
-    instruction:
-      "In Search Console, open Settings > Users and permissions > Add user, enter the service-account email, and grant Restricted.",
-  },
-  {
-    step: 7,
-    instruction:
-      "For personal access, create your own Desktop OAuth client and run gcloud auth application-default login --client-id-file=client.json --scopes=https://www.googleapis.com/auth/analytics.readonly,https://www.googleapis.com/auth/webmasters.readonly,https://www.googleapis.com/auth/cloud-platform.",
-  },
-  {
-    step: 8,
-    instruction:
-      "Do not use Google's built-in gcloud client for these scopes or create a client in a project whose consent screen serves another app. If you save then delete a key file, chain commands with &&, not &.",
+      "For personal access, use your own Desktop OAuth client and run gcloud auth application-default login --client-id-file=client.json --scopes=https://www.googleapis.com/auth/webmasters.readonly,https://www.googleapis.com/auth/cloud-platform.",
   },
 ];
 
-function errorInfo(error: unknown): ErrorInfo {
-  if (!error || typeof error !== "object") return { serviceDisabled: false };
-  const response = "response" in error && error.response && typeof error.response === "object" ? error.response : {};
-  const status = "status" in response && typeof response.status === "number" ? response.status : undefined;
-  const data = "data" in response && response.data && typeof response.data === "object" ? response.data : {};
-  const apiError = "error" in data && data.error && typeof data.error === "object" ? data.error : {};
-  const details = "details" in apiError && Array.isArray(apiError.details) ? apiError.details : [];
-  const legacyErrors = "errors" in apiError && Array.isArray(apiError.errors) ? apiError.errors : [];
-  const disabled = details.find(
-    (item) => item && typeof item === "object" && "reason" in item && item.reason === "SERVICE_DISABLED",
-  );
-  const legacyDisabled = legacyErrors.some(
-    (item) =>
-      item &&
-      typeof item === "object" &&
-      "reason" in item &&
-      (item.reason === "accessNotConfigured" || item.reason === "SERVICE_DISABLED"),
-  );
-  const metadata =
-    disabled && "metadata" in disabled && disabled.metadata && typeof disabled.metadata === "object"
-      ? disabled.metadata
-      : {};
-  const service = "service" in metadata && typeof metadata.service === "string" ? metadata.service : undefined;
-  const consumer = "consumer" in metadata && typeof metadata.consumer === "string" ? metadata.consumer : undefined;
-  const message = "message" in apiError && typeof apiError.message === "string" ? apiError.message : "";
-  const project = consumer?.match(/projects\/([^/]+)/)?.[1] ?? message.match(/project(?:s)?[\s/:=]+([\w.-]+)/i)?.[1];
-  return {
-    ...(status ? { status } : {}),
-    ...(service ? { service } : {}),
-    ...(project ? { project } : {}),
-    serviceDisabled: Boolean(disabled) || legacyDisabled,
-  };
-}
+type Site = { siteUrl: string; permissionLevel?: string };
 
-function apiName(service: string | undefined, fallback: string): string {
-  if (service?.includes("analyticsdata")) return "Google Analytics Data API";
-  if (service?.includes("analyticsadmin")) return "Google Analytics Admin API";
-  if (service?.includes("searchconsole") || service?.includes("webmasters")) return "Google Search Console API";
-  return fallback;
-}
-
-function issue(error: unknown, auth: AuthProvider, fallbackApi: string, accessHelp: string): string {
-  const info = errorInfo(error);
-  if (info.serviceDisabled) {
-    const api = apiName(info.service, fallbackApi);
-    const project = info.project ?? auth.projectId ?? auth.quotaProjectId;
-    return `Enable ${api}${project ? ` in project ${project}` : " in your Google Cloud project"} (Google Cloud Console > APIs & Services).`;
-  }
-  if (info.status === 403) return accessHelp;
-  return `${fallbackApi} request failed${info.status ? ` (HTTP ${info.status})` : ""}. Check network access and Google API availability.`;
-}
-
-async function googleRequest(auth: AuthProvider, url: string): Promise<unknown> {
-  const response = await auth.client.request({ url });
+async function request(auth: AuthProvider, url: string, method = "GET", data?: object): Promise<unknown> {
+  const response = await auth.client.request({ url, method, ...(data ? { data } : {}) });
   return response.data;
 }
 
-async function googleReport(auth: AuthProvider, propertyId: string): Promise<unknown> {
-  const client = new BetaAnalyticsDataClient({
-    authClient: auth.client,
-    scopes: SCOPES,
-    projectId: auth.projectId,
-    fallback: true,
-  });
+async function sites(auth: AuthProvider): Promise<Site[]> {
+  const data = await request(auth, API);
+  if (!data || typeof data !== "object" || !("siteEntry" in data) || !Array.isArray(data.siteEntry)) return [];
+  return data.siteEntry.flatMap((site) =>
+    site && typeof site === "object" && "siteUrl" in site && typeof site.siteUrl === "string"
+      ? [
+          {
+            siteUrl: site.siteUrl,
+            ...("permissionLevel" in site && typeof site.permissionLevel === "string"
+              ? { permissionLevel: site.permissionLevel }
+              : {}),
+          },
+        ]
+      : [],
+  );
+}
+
+export async function runSetupCheck(auth: AuthProvider): Promise<string> {
   try {
-    const [report] = await client.runReport({
-      property: `properties/${propertyId.replace(/^properties\//, "")}`,
-      dateRanges: [{ startDate: "6daysAgo", endDate: "today" }],
-      metrics: [{ name: "sessions" }, { name: "activeUsers" }],
-      limit: 1,
+    const accessible = await sites(auth);
+    const missing = accessible.length
+      ? []
+      : [
+          "No Search Console properties are accessible. Add the authenticated account in Search Console Settings > Users and permissions.",
+        ];
+    return encode({
+      auth: { type: auth.type, source: auth.source, ...(auth.email ? { account_email: auth.email } : {}) },
+      setup: { status: missing.length ? "incomplete" : "ready", missing, guide: setupGuide },
+      sites: accessible
+        .slice(0, 100)
+        .map(({ siteUrl, permissionLevel }) => ({ site_url: siteUrl, permission: permissionLevel ?? "" })),
+      truncated: accessible.length > 100,
     });
-    return report;
-  } finally {
-    await client.close();
+  } catch (error) {
+    const status =
+      error &&
+      typeof error === "object" &&
+      "response" in error &&
+      error.response &&
+      typeof error.response === "object" &&
+      "status" in error.response
+        ? error.response.status
+        : undefined;
+    const message =
+      status === 403
+        ? "Search Console access denied. Add the authenticated account in Search Console Settings > Users and permissions."
+        : "Search Console API request failed. Check API access and network connectivity.";
+    return encode({
+      auth: { type: auth.type, source: auth.source },
+      setup: { status: "incomplete", missing: [message], guide: setupGuide },
+    });
   }
 }
 
-function rows(data: unknown, name: string): unknown[] {
-  if (!data || typeof data !== "object") return [];
-  const value: unknown = Reflect.get(data, name);
-  return Array.isArray(value) ? value : [];
-}
-
-function propertyEntries(summaries: unknown[]): { property_id: string; display_name: string }[] {
-  return summaries.flatMap((summary) => {
-    if (!summary || typeof summary !== "object" || !("propertySummaries" in summary)) return [];
-    const properties = Array.isArray(summary.propertySummaries) ? summary.propertySummaries : [];
-    return properties.flatMap((property) => {
-      if (
-        !property ||
-        typeof property !== "object" ||
-        !("property" in property) ||
-        typeof property.property !== "string"
+export async function runHome(auth: AuthProvider): Promise<string> {
+  try {
+    const accessible = await sites(auth);
+    if (!accessible.length)
+      return encode({
+        tool: "search-console-axi",
+        sites: "0 accessible properties",
+        help: ["Run search-console-axi setup for access instructions."],
+      });
+    const site = accessible[0]!.siteUrl;
+    const query = async (dimension: "query" | "page", orderBy: string) => {
+      const result = await request(auth, `${API}/${encodeURIComponent(site)}/searchAnalytics/query`, "POST", {
+        startDate: "7daysAgo",
+        endDate: "yesterday",
+        dimensions: [dimension],
+        rowLimit: 10,
+        orderBy: [{ field: orderBy, direction: "DESCENDING" }],
+      });
+      return result && typeof result === "object" && "rows" in result && Array.isArray(result.rows) ? result.rows : [];
+    };
+    const [summaryRows, queries, pages] = await Promise.all([
+      request(auth, `${API}/${encodeURIComponent(site)}/searchAnalytics/query`, "POST", {
+        startDate: "7daysAgo",
+        endDate: "yesterday",
+      }).then((result) =>
+        result && typeof result === "object" && "rows" in result && Array.isArray(result.rows) ? result.rows : [],
+      ),
+      query("query", "clicks"),
+      query("page", "clicks"),
+    ]);
+    const opportunityRows = await request(auth, `${API}/${encodeURIComponent(site)}/searchAnalytics/query`, "POST", {
+      startDate: "7daysAgo",
+      endDate: "yesterday",
+      dimensions: ["page"],
+      rowLimit: 1000,
+      orderBy: [{ field: "impressions", direction: "DESCENDING" }],
+    });
+    const rows =
+      opportunityRows &&
+      typeof opportunityRows === "object" &&
+      "rows" in opportunityRows &&
+      Array.isArray(opportunityRows.rows)
+        ? opportunityRows.rows
+        : [];
+    const opportunities = rows
+      .filter(
+        (row) =>
+          row &&
+          typeof row === "object" &&
+          "ctr" in row &&
+          typeof row.ctr === "number" &&
+          row.ctr < 0.02 &&
+          "impressions" in row &&
+          typeof row.impressions === "number" &&
+          row.impressions > 100,
       )
-        return [];
-      return [
-        {
-          property_id: property.property.replace(/^properties\//, ""),
-          display_name:
-            "displayName" in property && typeof property.displayName === "string" ? property.displayName : "",
-        },
-      ];
+      .slice(0, 10);
+    return encode({
+      tool: "search-console-axi",
+      site,
+      sites: accessible.length,
+      period: "last 7 complete days",
+      totals: summaryRows[0] ?? { clicks: 0, impressions: 0, ctr: 0, position: 0 },
+      top_queries: queries,
+      top_pages: pages,
+      low_ctr_opportunities: opportunities,
+      help: [
+        "Run search-console-axi setup check to verify access.",
+        "Run search-console-axi inspect <url> --site <site> to check indexing.",
+      ],
     });
-  });
+  } catch {
+    return encode({
+      tool: "search-console-axi",
+      status: "error",
+      help: ["Run search-console-axi setup check for access guidance."],
+    });
+  }
 }
 
-function siteEntries(sites: unknown[]): { site_url: string; permission: string }[] {
-  return sites.flatMap((site) => {
-    if (!site || typeof site !== "object" || !("siteUrl" in site) || typeof site.siteUrl !== "string") return [];
-    return [
-      {
-        site_url: site.siteUrl,
-        permission: "permissionLevel" in site && typeof site.permissionLevel === "string" ? site.permissionLevel : "",
-      },
-    ];
+export async function inspectUrl(auth: AuthProvider, url: string, siteUrl: string): Promise<string> {
+  const data = await request(auth, "https://searchconsole.googleapis.com/v1/urlInspection/index:inspect", "POST", {
+    inspectionUrl: url,
+    siteUrl,
+    languageCode: "en-US",
   });
-}
-
-function metricTotals(report: unknown): Record<string, string> {
-  if (!report || typeof report !== "object" || !("rows" in report) || !Array.isArray(report.rows))
-    return { sessions: "0", active_users: "0" };
-  const sumAt = (index: number) =>
-    report.rows.reduce((total, row) => {
-      if (!row || typeof row !== "object" || !("metricValues" in row) || !Array.isArray(row.metricValues))
-        return total;
-      const item = row.metricValues[index];
-      if (!item || typeof item !== "object" || !("value" in item)) return total;
-      const value = String(item.value);
-      return /^-?\d+$/.test(value) ? total + BigInt(value) : total;
-    }, 0n).toString();
-  return { sessions: sumAt(0), active_users: sumAt(1) };
-}
-
-export async function runSetupCheck(auth: AuthProvider, options: SetupCheckOptions = {}): Promise<string> {
-  const email = auth.email ?? "the authenticated account";
-  const missing: string[] = [];
-  const errors: { step: string; message: string }[] = [];
-  let properties: { property_id: string; display_name: string }[] = [];
-  let sites: { site_url: string; permission: string }[] = [];
-
-  try {
-    const response = await googleRequest(auth, "https://analyticsadmin.googleapis.com/v1beta/accountSummaries?pageSize=200");
-    properties = propertyEntries(rows(response, "accountSummaries"));
-    if (!properties.length)
-      missing.push(
-        `No GA4 properties are accessible. Add ${email} as Viewer in GA4 Admin > Property access management > + > Add users; untick notify.`,
-      );
-  } catch (error) {
-    const message = issue(
-      error,
-      auth,
-      "Google Analytics Admin API",
-      `GA4 access denied. Add ${email} as Viewer in GA4 Admin > Property access management > + > Add users; untick notify.`,
-    );
-    errors.push({ step: "ga4_properties", message });
-    if (message.startsWith("Enable ")) missing.push(message);
-    else if (errorInfo(error).status === 403) missing.push(message);
-  }
-
-  try {
-    const response = await googleRequest(auth, "https://searchconsole.googleapis.com/webmasters/v3/sites");
-    sites = siteEntries(rows(response, "siteEntry"));
-    if (!sites.length)
-      missing.push(
-        `No Search Console sites are accessible. Add ${email} as Restricted in Search Console Settings > Users and permissions > Add user.`,
-      );
-  } catch (error) {
-    const message = issue(
-      error,
-      auth,
-      "Google Search Console API",
-      `Search Console access denied. Add ${email} as Restricted in Search Console Settings > Users and permissions > Add user.`,
-    );
-    errors.push({ step: "search_console_sites", message });
-    if (message.startsWith("Enable ")) missing.push(message);
-    else if (errorInfo(error).status === 403) missing.push(message);
-  }
-
-  const requestedPropertyId = options.propertyId?.replace(/^properties\//, "");
-  const propertyId =
-    options.propertyId === undefined
-      ? properties[0]?.property_id
-      : properties.find((property) => property.property_id === requestedPropertyId)?.property_id;
-  if (options.propertyId !== undefined && !propertyId)
-    missing.push(`GA4 property ${requestedPropertyId} is not visible to ${email}; choose a property from the accessible list.`);
-  let reportResult: { status: string; property_id?: string; date_range?: string; totals?: Record<string, string> };
-  if (!propertyId) {
-    reportResult = { status: "skipped" };
-  } else {
-    try {
-      const response = await googleReport(auth, propertyId);
-      reportResult = {
-        status: "ok",
-        property_id: propertyId,
-        date_range: "last 7 days",
-        totals: metricTotals(response),
-      };
-    } catch (error) {
-      const message = issue(
-        error,
-        auth,
-        "Google Analytics Data API",
-        `GA4 report access denied for ${email}; add the account as Viewer in GA4 Admin > Property access management > + > Add users.`,
-      );
-      reportResult = { status: "error", property_id: propertyId };
-      errors.push({ step: "ga4_report", message });
-      if (message.startsWith("Enable ")) missing.push(message);
-      else if (errorInfo(error).status === 403) missing.push(message);
-    }
-  }
-
-  return encode({
-    auth: { type: auth.type, source: auth.source, ...(auth.email ? { account_email: auth.email } : {}) },
-    setup: { status: missing.length || errors.length ? "incomplete" : "ready", missing, guide: setupGuide },
-    ga4_properties: properties.slice(0, 100),
-    search_console_sites: sites.slice(0, 100),
-    truncated: { ga4_properties: properties.length > 100, search_console_sites: sites.length > 100 },
-    report: reportResult,
-    errors,
-  });
+  return encode(data && typeof data === "object" && "inspectionResult" in data ? data.inspectionResult : data);
 }
