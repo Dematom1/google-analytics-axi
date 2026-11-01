@@ -162,11 +162,7 @@ export async function setupCommand(args: string[]): Promise<string> {
   }
   if (action === "uninstall") {
     if (rest.length) fail("usage: google-analytics-axi setup uninstall");
-    try {
-      systemKeychain().deletePassword();
-    } catch (error) {
-      if (readConfig().authType === "oauth") throw error;
-    }
+    if (readConfig().authType === "oauth") systemKeychain().deletePassword();
     try {
       unlinkSync(configFile());
     } catch {
