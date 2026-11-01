@@ -95,6 +95,22 @@ test("setup check is ready with Search Console access alone", async () => {
   assert.deepEqual(output.sites, [{ site_url: "sc-domain:example.com", permission: "siteRestrictedUser" }]);
 });
 
+test("empty Search Console site lists explain no resources may exist", async () => {
+  const auth = mockAuth(async () => ({ data: { siteEntry: [] } }));
+  const expected = "No Search Console sites visible to this account - grant access as in step 4, or none exist.";
+  const home = decode(await runHome(auth));
+  assert.equal(home.sites, expected);
+
+  const credential = new UserRefreshClient();
+  credential.request = async () => ({ data: { siteEntry: [] } });
+  const check = decode(
+    await setupCommand(["check"], {
+      authFactory: () => ({ getApplicationDefault: async () => ({ credential, projectId: null }) }),
+    }),
+  );
+  assert.equal(check.setup.missing[0], expected);
+});
+
 test("home reports Search Console queries, pages, and low-CTR opportunities", async () => {
   const calls = [];
   const auth = mockAuth(async (request) => {

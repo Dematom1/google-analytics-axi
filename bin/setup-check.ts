@@ -51,7 +51,7 @@ export async function runSetupCheck(auth: AuthProvider): Promise<string> {
     const missing = accessible.length
       ? []
       : [
-          "No Search Console properties are accessible. Add the authenticated account in Search Console Settings > Users and permissions.",
+          "No Search Console sites visible to this account - grant access as in step 4, or none exist.",
         ];
     return encode({
       auth: { type: auth.type, source: auth.source, ...(auth.email ? { account_email: auth.email } : {}) },
@@ -88,7 +88,7 @@ export async function runHome(auth: AuthProvider): Promise<string> {
     if (!accessible.length)
       return encode({
         tool: "search-console-axi",
-        sites: "0 accessible properties",
+        sites: "No Search Console sites visible to this account - grant access as in step 4, or none exist.",
         help: ["Run search-console-axi setup for access instructions."],
       });
     const site = accessible[0]!.siteUrl;
