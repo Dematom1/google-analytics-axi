@@ -57,12 +57,19 @@ function apiDisabledMessage(error: unknown): string | undefined {
   return `Enable ${api} in ${project} to use Search Console.`;
 }
 
+const ACCESS_DENIED = "Search Console access denied. Add the authenticated account in Search Console Settings > Users and permissions.";
+
 async function request(auth: AuthProvider, url: string, method = "GET", data?: object): Promise<unknown> {
   try {
     const response = await auth.client.request({ url, method, ...(data ? { data } : {}) });
     return response.data;
   } catch (error) {
-    throw new Error(apiDisabledMessage(error) ?? (error instanceof Error ? error.message : "Google API request failed"));
+    if (error instanceof Error && "response" in error && error.response && typeof error.response === "object") {
+      const response = error.response;
+      if ("status" in response && response.status === 403)
+        error.message = apiDisabledMessage(error) ?? ACCESS_DENIED;
+    }
+    throw error;
   }
 }
 
@@ -126,7 +133,7 @@ export async function runSetupCheck(auth: AuthProvider): Promise<string> {
       error instanceof Error && error.message.startsWith("Enable ")
         ? error.message
         : status === 403
-          ? "Search Console access denied. Add the authenticated account in Search Console Settings > Users and permissions."
+          ? ACCESS_DENIED
           : "Search Console API request failed. Check API access and network connectivity.";
     return encode({
       auth: { type: auth.type, source: auth.source },
@@ -208,8 +215,11 @@ export async function runHome(auth: AuthProvider): Promise<string> {
     return encode({
       tool: "search-console-axi",
       status: "error",
-      ...(error instanceof Error && error.message.startsWith("Enable ") ? { error: error.message } : {}),
+      ...(error instanceof Error && (error.message.startsWith("Enable ") || error.message === ACCESS_DENIED)
+        ? { error: error.message }
+        : {}),
       help: ["Run search-console-axi setup check for access guidance."],
+    });
   }
 }
 

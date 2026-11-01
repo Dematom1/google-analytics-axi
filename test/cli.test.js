@@ -164,6 +164,25 @@ test("disabled Search Console APIs produce enable-project guidance for both Goog
   }
 });
 
+test("ordinary Search Console 403 errors retain access-denied guidance", async () => {
+  const failRequest = async () => {
+    throw Object.assign(new Error("forbidden"), {
+      response: { status: 403, data: { error: { message: "Insufficient Permission" } } },
+    });
+  };
+  const auth = mockAuth(failRequest);
+  const credential = new UserRefreshClient();
+  credential.request = failRequest;
+  const setup = decode(await setupCommand(["check"], {
+    authFactory: () => ({ getApplicationDefault: async () => ({ credential, projectId: null }) }),
+  }));
+  assert.match(setup.setup.missing[0], /Search Console access denied/);
+
+  const home = decode(await runHome(auth));
+  assert.match(home.error, /Search Console access denied/);
+  await assert.rejects(inspectUrl(auth, "https://example.com", "sc-domain:example.com"), /Search Console access denied/);
+});
+
 test("home reports Search Console queries, pages, and low-CTR opportunities", async () => {
   const calls = [];
   const auth = mockAuth(async (request) => {
