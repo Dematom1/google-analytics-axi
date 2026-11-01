@@ -28,6 +28,19 @@ async function request(auth: AuthProvider, url: string, method = "GET", data?: o
   return response.data;
 }
 
+function searchDateRange(): { startDate: string; endDate: string } {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const date = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+  const today = Date.UTC(Number(date.year), Number(date.month) - 1, Number(date.day));
+  const format = (offset: number) => new Date(today + offset * 86_400_000).toISOString().slice(0, 10);
+  return { startDate: format(-7), endDate: format(-1) };
+}
+
 async function sites(auth: AuthProvider): Promise<Site[]> {
   const data = await request(auth, API);
   if (!data || typeof data !== "object" || !("siteEntry" in data) || !Array.isArray(data.siteEntry)) return [];
@@ -92,10 +105,10 @@ export async function runHome(auth: AuthProvider): Promise<string> {
         help: ["Run search-console-axi setup for access instructions."],
       });
     const site = accessible[0]!.siteUrl;
+    const dateRange = searchDateRange();
     const query = async (dimension: "query" | "page", orderBy: string) => {
       const result = await request(auth, `${API}/${encodeURIComponent(site)}/searchAnalytics/query`, "POST", {
-        startDate: "7daysAgo",
-        endDate: "yesterday",
+        ...dateRange,
         dimensions: [dimension],
         rowLimit: 10,
         orderBy: [{ field: orderBy, direction: "DESCENDING" }],
@@ -104,8 +117,7 @@ export async function runHome(auth: AuthProvider): Promise<string> {
     };
     const [summaryRows, queries, pages] = await Promise.all([
       request(auth, `${API}/${encodeURIComponent(site)}/searchAnalytics/query`, "POST", {
-        startDate: "7daysAgo",
-        endDate: "yesterday",
+        ...dateRange,
       }).then((result) =>
         result && typeof result === "object" && "rows" in result && Array.isArray(result.rows) ? result.rows : [],
       ),
@@ -113,8 +125,7 @@ export async function runHome(auth: AuthProvider): Promise<string> {
       query("page", "clicks"),
     ]);
     const opportunityRows = await request(auth, `${API}/${encodeURIComponent(site)}/searchAnalytics/query`, "POST", {
-      startDate: "7daysAgo",
-      endDate: "yesterday",
+      ...dateRange,
       dimensions: ["page"],
       rowLimit: 1000,
       orderBy: [{ field: "impressions", direction: "DESCENDING" }],

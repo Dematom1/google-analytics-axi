@@ -129,6 +129,28 @@ test("home reports Search Console queries, pages, and low-CTR opportunities", as
   assert.equal(output.top_pages.length, 1);
   assert.equal(output.low_ctr_opportunities.length, 1);
   assert.equal(calls.length, 5);
+  const reports = calls.filter((call) => call.url.includes("searchAnalytics/query"));
+  const dates = reports.map(({ data }) => [data.startDate, data.endDate]);
+  assert.equal(dates.length, 4);
+  assert.ok(dates.every(([start, end]) => /^\d{4}-\d{2}-\d{2}$/.test(start) && /^\d{4}-\d{2}-\d{2}$/.test(end)));
+  assert.ok(dates.every(([start, end]) => start === dates[0][0] && end === dates[0][1]));
+  assert.equal(Date.parse(`${dates[0][1]}T00:00:00Z`) - Date.parse(`${dates[0][0]}T00:00:00Z`), 6 * 86_400_000);
+  const pacificToday = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/Los_Angeles",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    })
+      .formatToParts(new Date())
+      .map(({ type, value }) => [type, value]),
+  );
+  const yesterday = new Date(
+    Date.UTC(Number(pacificToday.year), Number(pacificToday.month) - 1, Number(pacificToday.day)) - 86_400_000,
+  )
+    .toISOString()
+    .slice(0, 10);
+  assert.equal(dates[0][1], yesterday);
 });
 
 test("URL inspection uses the read-only index inspection endpoint", async () => {
