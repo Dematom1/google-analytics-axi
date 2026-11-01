@@ -103,7 +103,12 @@ async function googleRequest(auth: AuthProvider, url: string): Promise<unknown> 
 }
 
 async function googleReport(auth: AuthProvider, propertyId: string): Promise<unknown> {
-  const client = new BetaAnalyticsDataClient({ authClient: auth.client, scopes: SCOPES, projectId: auth.projectId });
+  const client = new BetaAnalyticsDataClient({
+    authClient: auth.client,
+    scopes: SCOPES,
+    projectId: auth.projectId,
+    fallback: true,
+  });
   try {
     const [report] = await client.runReport({
       property: `properties/${propertyId.replace(/^properties\//, "")}`,

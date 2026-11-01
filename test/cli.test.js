@@ -41,7 +41,7 @@ const factoryFor = (credential, seen) => (options) => {
     getClient: async () => credential,
   };
 };
-const setupOptions = (t, { request, runReport }) => {
+const setupOptions = (t, { accountSummaries = [], sites = [], adminError, sitesError, report, reportError, requests = [] }) => {
   const previousFetch = globalThis.fetch;
   const previousKey = process.env["GOOGLE_ANALYTICS_AXI_SA_KEY"];
   const key = JSON.parse(previousKey);
@@ -57,22 +57,19 @@ const setupOptions = (t, { request, runReport }) => {
       return new Response(JSON.stringify({ access_token: "test-access-token", expires_in: 3600 }), {
         headers: { "content-type": "application/json" },
       });
-    try {
-      let data;
-      if (url.includes("analyticsdata.googleapis.com")) {
-        const propertyId = new URL(url).pathname.match(/properties\/([^:]+)/)?.[1];
-        data = await runReport?.(undefined, propertyId);
-      } else {
-        data = await request?.(undefined, url);
-      }
-      return new Response(JSON.stringify(data ?? {}), { headers: { "content-type": "application/json" } });
-    } catch (error) {
-      const response = error && typeof error === "object" && "response" in error ? error.response : undefined;
-      return new Response(JSON.stringify(response?.data ?? { error: { message: String(error) } }), {
-        status: response?.status ?? 500,
+    requests.push(url);
+    const reportRequest = url.includes("analyticsdata.googleapis.com");
+    const adminRequest = url.startsWith("https://analyticsadmin.googleapis.com/v1beta/accountSummaries");
+    const searchConsoleRequest = url.startsWith("https://searchconsole.googleapis.com/webmasters/v3/sites");
+    if (!reportRequest && !adminRequest && !searchConsoleRequest) throw new Error(`Unexpected Google request: ${url}`);
+    const failure = reportRequest ? reportError : adminRequest ? adminError : sitesError;
+    if (failure)
+      return new Response(JSON.stringify(failure.data), {
+        status: failure.status,
         headers: { "content-type": "application/json" },
       });
-    }
+    const data = reportRequest ? (report ?? { rows: [] }) : adminRequest ? { accountSummaries } : { siteEntry: sites };
+    return new Response(JSON.stringify(data), { headers: { "content-type": "application/json" } });
   };
   t.after(() => {
     globalThis.fetch = previousFetch;
@@ -248,22 +245,13 @@ test("setup check reports properties, sites, and a seven-day total report using 
     }),
   );
   const urls = [];
-  let reportProperty;
   const output = decode(
     await setupCommand(["check"], setupOptions(t, {
-        request: async (_auth, url) => {
-          urls.push(url);
-          if (url.includes("accountSummaries"))
-            return {
-              accountSummaries: [{ propertySummaries: [{ property: "properties/123", displayName: "Main site" }] }],
-            };
-          return { siteEntry: [{ siteUrl: "https://example.com/", permissionLevel: "siteRestrictedUser" }] };
-        },
-        runReport: async (_auth, propertyId) => {
-          reportProperty = propertyId;
-          return { rows: [{ metricValues: [{ value: "42" }, { value: "17" }] }] };
-        },
-      })),
+      accountSummaries: [{ propertySummaries: [{ property: "properties/123", displayName: "Main site" }] }],
+      sites: [{ siteUrl: "https://example.com/", permissionLevel: "siteRestrictedUser" }],
+      report: { rows: [{ metricValues: [{ value: "42" }, { value: "17" }] }] },
+      requests: urls,
+    })),
   );
   assert.deepEqual(output.ga4_properties, [{ property_id: "123", display_name: "Main site" }]);
   assert.deepEqual(output.search_console_sites, [
@@ -275,8 +263,8 @@ test("setup check reports properties, sites, and a seven-day total report using 
     date_range: "last 7 days",
     totals: { sessions: "42", active_users: "17" },
   });
-  assert.equal(reportProperty, "123");
-  assert.equal(urls.length, 2);
+  assert.equal(urls.filter((url) => url.includes("googleapis.com")).length, 3);
+  assert.ok(urls.some((url) => url.includes("properties/123:runReport")));
   assert.equal(output.setup.status, "ready");
   assert.equal(JSON.stringify(output).includes("not-a-real-key"), false);
   assert.equal(existsSync(join(dir, "google-analytics-axi", "config.json")), false);
@@ -298,29 +286,20 @@ test("setup detects missing GA4 and Search Console access and disabled APIs", as
   );
   const output = decode(
     await setupCommand(["setup"], setupOptions(t, {
-        request: async (_auth, url) => {
-          if (url.includes("accountSummaries"))
-            throw {
-              response: {
-                status: 403,
-                data: {
-                  error: {
-                    details: [
-                      {
-                        reason: "SERVICE_DISABLED",
-                        metadata: { service: "analyticsadmin.googleapis.com", consumer: "projects/prod-project" },
-                      },
-                    ],
-                  },
-                },
+      adminError: {
+        status: 403,
+        data: {
+          error: {
+            details: [
+              {
+                reason: "SERVICE_DISABLED",
+                metadata: { service: "analyticsadmin.googleapis.com", consumer: "projects/prod-project" },
               },
-            };
-          return { siteEntry: [] };
+            ],
+          },
         },
-        runReport: async () => {
-          throw new Error("must skip report when no property is accessible");
-        },
-      })),
+      },
+    })),
   );
   assert.equal(output.setup.status, "incomplete");
   assert.ok(
@@ -357,27 +336,22 @@ test("setup names the disabled Search Console API and project", async (t) => {
   );
   const output = decode(
     await setupCommand(["check"], setupOptions(t, {
-        request: async (_auth, url) => {
-          if (url.includes("accountSummaries"))
-            return { accountSummaries: [{ propertySummaries: [{ property: "properties/123" }] }] };
-          throw {
-            response: {
-              status: 403,
-              data: {
-                error: {
-                  details: [
-                    {
-                      reason: "SERVICE_DISABLED",
-                      metadata: { service: "searchconsole.googleapis.com", consumer: "projects/prod-project" },
-                    },
-                  ],
-                },
+      accountSummaries: [{ propertySummaries: [{ property: "properties/123" }] }],
+      sitesError: {
+        status: 403,
+        data: {
+          error: {
+            details: [
+              {
+                reason: "SERVICE_DISABLED",
+                metadata: { service: "searchconsole.googleapis.com", consumer: "projects/prod-project" },
               },
-            },
-          };
+            ],
+          },
         },
-        runReport: async () => ({ rows: [] }),
-      })),
+      },
+      report: { rows: [] },
+    })),
   );
   assert.ok(
     output.errors.some(
@@ -404,10 +378,7 @@ test("setup detects empty GA4 and Search Console access lists", async (t) => {
   );
   const output = decode(
     await setupCommand(["check", "--property", "999"], setupOptions(t, {
-        request: async () => ({ accountSummaries: [], siteEntry: [] }),
-        runReport: async () => {
-          throw new Error("must skip report when no property is accessible");
-        },
+        requests: [],
       })),
   );
   assert.ok(
@@ -437,17 +408,11 @@ test("setup check identifies legacy disabled API errors", async (t) => {
   );
   const output = decode(
     await setupCommand(["check"], setupOptions(t, {
-        request: async (_auth, url) => {
-          if (url.includes("accountSummaries"))
-            throw {
-              response: {
-                status: 403,
-                data: { error: { errors: [{ reason: "accessNotConfigured" }], message: "API disabled in project legacy-project" } },
-              },
-            };
-          return { siteEntry: [] };
-        },
-      })),
+      adminError: {
+        status: 403,
+        data: { error: { errors: [{ reason: "accessNotConfigured" }], message: "API disabled in project legacy-project" } },
+      },
+    })),
   );
   assert.ok(
     output.errors.some(
@@ -475,28 +440,22 @@ test("setup check reports a disabled Google Analytics Data API",  async (t) => {
   );
   const output = decode(
     await setupCommand(["check", "--property", "123"], setupOptions(t, {
-        request: async (_auth, url) =>
-          url.includes("accountSummaries")
-            ? { accountSummaries: [{ propertySummaries: [{ property: "properties/123", displayName: "Main site" }] }] }
-            : { siteEntry: [{ siteUrl: "https://example.com/", permissionLevel: "siteRestrictedUser" }] },
-        runReport: async () => {
-          throw {
-            response: {
-              status: 403,
-              data: {
-                error: {
-                  details: [
-                    {
-                      reason: "SERVICE_DISABLED",
-                      metadata: { service: "analyticsdata.googleapis.com", consumer: "projects/prod-project" },
-                    },
-                  ],
-                },
+      accountSummaries: [{ propertySummaries: [{ property: "properties/123", displayName: "Main site" }] }],
+      sites: [{ siteUrl: "https://example.com/", permissionLevel: "siteRestrictedUser" }],
+      reportError: {
+        status: 403,
+        data: {
+          error: {
+            details: [
+              {
+                reason: "SERVICE_DISABLED",
+                metadata: { service: "analyticsdata.googleapis.com", consumer: "projects/prod-project" },
               },
-            },
-          };
+            ],
+          },
         },
-      })),
+      },
+    })),
   );
   assert.ok(
     output.errors.some(
