@@ -191,6 +191,7 @@ test("uninstall distinguishes absent config from removal failures", async (t) =>
 test("unreadable service-account key fails without printing key data", async (t) => {
   const dir = temp(t);
   setEnv(t, "XDG_CONFIG_HOME", dir);
+  setEnv(t, "GOOGLE_ANALYTICS_AXI_SA_KEY", undefined);
   const missing = join(dir, "missing.json");
   await assert.rejects(
     getAuthClient({
