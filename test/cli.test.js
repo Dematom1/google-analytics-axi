@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { generateKeyPairSync } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -39,6 +40,46 @@ const factoryFor = (credential, seen) => (options) => {
     getApplicationDefault: async () => ({ credential, projectId: null }),
     getClient: async () => credential,
   };
+};
+const setupOptions = (t, { request, runReport }) => {
+  const previousFetch = globalThis.fetch;
+  const previousKey = process.env["GOOGLE_ANALYTICS_AXI_SA_KEY"];
+  const key = JSON.parse(previousKey);
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  process.env["GOOGLE_ANALYTICS_AXI_SA_KEY"] = JSON.stringify({ ...key, private_key: privateKey });
+  globalThis.fetch = async (input) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (url.includes("oauth2.googleapis.com/token"))
+      return new Response(JSON.stringify({ access_token: "test-access-token", expires_in: 3600 }), {
+        headers: { "content-type": "application/json" },
+      });
+    try {
+      let data;
+      if (url.includes("analyticsdata.googleapis.com")) {
+        const propertyId = new URL(url).pathname.match(/properties\/([^:]+)/)?.[1];
+        data = await runReport?.(undefined, propertyId);
+      } else {
+        data = await request?.(undefined, url);
+      }
+      return new Response(JSON.stringify(data ?? {}), { headers: { "content-type": "application/json" } });
+    } catch (error) {
+      const response = error && typeof error === "object" && "response" in error ? error.response : undefined;
+      return new Response(JSON.stringify(response?.data ?? { error: { message: String(error) } }), {
+        status: response?.status ?? 500,
+        headers: { "content-type": "application/json" },
+      });
+    }
+  };
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+    if (previousKey === undefined) delete process.env["GOOGLE_ANALYTICS_AXI_SA_KEY"];
+    else process.env["GOOGLE_ANALYTICS_AXI_SA_KEY"] = previousKey;
+  });
+  return {};
 };
 
 test("CLI reports its version and structured no-argument home", () => {
@@ -209,8 +250,7 @@ test("setup check reports properties, sites, and a seven-day total report using 
   const urls = [];
   let reportProperty;
   const output = decode(
-    await setupCommand(["check"], {
-      setupCheck: {
+    await setupCommand(["check"], setupOptions(t, {
         request: async (_auth, url) => {
           urls.push(url);
           if (url.includes("accountSummaries"))
@@ -223,8 +263,7 @@ test("setup check reports properties, sites, and a seven-day total report using 
           reportProperty = propertyId;
           return { rows: [{ metricValues: [{ value: "42" }, { value: "17" }] }] };
         },
-      },
-    }),
+      })),
   );
   assert.deepEqual(output.ga4_properties, [{ property_id: "123", display_name: "Main site" }]);
   assert.deepEqual(output.search_console_sites, [
@@ -258,8 +297,7 @@ test("setup detects missing GA4 and Search Console access and disabled APIs", as
     }),
   );
   const output = decode(
-    await setupCommand(["setup"], {
-      setupCheck: {
+    await setupCommand(["setup"], setupOptions(t, {
         request: async (_auth, url) => {
           if (url.includes("accountSummaries"))
             throw {
@@ -282,8 +320,7 @@ test("setup detects missing GA4 and Search Console access and disabled APIs", as
         runReport: async () => {
           throw new Error("must skip report when no property is accessible");
         },
-      },
-    }),
+      })),
   );
   assert.equal(output.setup.status, "incomplete");
   assert.ok(
@@ -319,8 +356,7 @@ test("setup names the disabled Search Console API and project", async (t) => {
     }),
   );
   const output = decode(
-    await setupCommand(["check"], {
-      setupCheck: {
+    await setupCommand(["check"], setupOptions(t, {
         request: async (_auth, url) => {
           if (url.includes("accountSummaries"))
             return { accountSummaries: [{ propertySummaries: [{ property: "properties/123" }] }] };
@@ -341,8 +377,7 @@ test("setup names the disabled Search Console API and project", async (t) => {
           };
         },
         runReport: async () => ({ rows: [] }),
-      },
-    }),
+      })),
   );
   assert.ok(
     output.errors.some(
@@ -368,14 +403,12 @@ test("setup detects empty GA4 and Search Console access lists", async (t) => {
     }),
   );
   const output = decode(
-    await setupCommand(["check", "--property", "999"], {
-      setupCheck: {
+    await setupCommand(["check", "--property", "999"], setupOptions(t, {
         request: async () => ({ accountSummaries: [], siteEntry: [] }),
         runReport: async () => {
           throw new Error("must skip report when no property is accessible");
         },
-      },
-    }),
+      })),
   );
   assert.ok(
     output.setup.missing.some(
@@ -403,8 +436,7 @@ test("setup check identifies legacy disabled API errors", async (t) => {
     JSON.stringify({ type: "service_account", client_email: "check-agent@example.invalid", private_key: "key" }),
   );
   const output = decode(
-    await setupCommand(["check"], {
-      setupCheck: {
+    await setupCommand(["check"], setupOptions(t, {
         request: async (_auth, url) => {
           if (url.includes("accountSummaries"))
             throw {
@@ -415,8 +447,7 @@ test("setup check identifies legacy disabled API errors", async (t) => {
             };
           return { siteEntry: [] };
         },
-      },
-    }),
+      })),
   );
   assert.ok(
     output.errors.some(
@@ -443,8 +474,7 @@ test("setup check reports a disabled Google Analytics Data API",  async (t) => {
     }),
   );
   const output = decode(
-    await setupCommand(["check", "--property", "123"], {
-      setupCheck: {
+    await setupCommand(["check", "--property", "123"], setupOptions(t, {
         request: async (_auth, url) =>
           url.includes("accountSummaries")
             ? { accountSummaries: [{ propertySummaries: [{ property: "properties/123", displayName: "Main site" }] }] }
@@ -466,8 +496,7 @@ test("setup check reports a disabled Google Analytics Data API",  async (t) => {
             },
           };
         },
-      },
-    }),
+      })),
   );
   assert.ok(
     output.errors.some(
