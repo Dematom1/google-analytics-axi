@@ -233,7 +233,7 @@ export async function runHome(auth: AuthProvider): Promise<string> {
     return encode({
       tool: "search-console-axi",
       site,
-      sites: accessible.length,
+      sites: reportable.length,
       period: "last 7 complete days",
       totals: formatRows([summaryRows[0] ?? { clicks: 0, impressions: 0, ctr: 0, position: 0 }])[0],
       top_queries: formatRows(queries),

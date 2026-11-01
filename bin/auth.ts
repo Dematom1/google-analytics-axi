@@ -2,6 +2,7 @@ import { GoogleAuth, JWT, UserRefreshClient, type AuthClient, type GoogleAuthOpt
 import { encode } from "@toon-format/toon";
 import { inspectUrl, runSetupCheck, setupGuide } from "./setup-check.js";
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -79,9 +80,16 @@ function readConfig(): Config {
 function saveConfig(config: Config): void {
   mkdirSync(configDir(), { recursive: true, mode: 0o700 });
   const path = configFile();
-  const temporaryFile = `${path}.tmp`;
-  writeFileSync(temporaryFile, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
-  renameSync(temporaryFile, path);
+  const temporaryFile = `${path}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporaryFile, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+    renameSync(temporaryFile, path);
+  } catch (error) {
+    try {
+      unlinkSync(temporaryFile);
+    } catch {}
+    throw error;
+  }
 }
 
 function parseServiceAccount(data: unknown): ServiceAccount | undefined {

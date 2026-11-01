@@ -293,6 +293,7 @@ test("home skips unverified sites and setup check marks all-unverified accounts 
   });
   const home = decode(await runHome(auth));
   assert.equal(home.site, "sc-domain:verified.example");
+  assert.equal(home.sites, 1);
   assert.equal(calls.length, 5);
 
   const credential = new UserRefreshClient();
