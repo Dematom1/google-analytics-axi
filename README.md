@@ -21,10 +21,10 @@ The CLI reads credentials through `google-auth-library`. It never stores or prin
 3. Load its JSON key from your secret manager into `SEARCH_CONSOLE_AXI_SA_KEY`. Never commit the key.
 4. In Search Console, add the service-account email under **Settings > Users and permissions** with Restricted access.
 
-For local key files, set `GOOGLE_APPLICATION_CREDENTIALS` or run `search-console-axi setup service-account <key.json>`. `SEARCH_CONSOLE_AXI_SA_KEY` takes precedence over `GOOGLE_APPLICATION_CREDENTIALS`, which takes precedence over user ADC. Set the ADC quota project with `gcloud auth application-default set-quota-project <project>` or use `GOOGLE_CLOUD_QUOTA_PROJECT`.
+For local key files, set `GOOGLE_APPLICATION_CREDENTIALS` or run `node dist/bin/search-console-axi.js setup service-account <key.json>`. Credential precedence is `SEARCH_CONSOLE_AXI_SA_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`, the saved path configured by `setup service-account`, then user ADC. To switch from a saved key to ADC, run `node dist/bin/search-console-axi.js setup uninstall`; this also removes the CLI's saved quota-project setting. Set the ADC quota project with `gcloud auth application-default set-quota-project <project>` or use `GOOGLE_CLOUD_QUOTA_PROJECT`.
 
-Run `search-console-axi setup` to check credentials and accessible sites. `search-console-axi setup status` reports the credential type and available account email, never credential contents. `search-console-axi setup uninstall` removes only the CLI's local configuration.
+Run `node dist/bin/search-console-axi.js setup` to check credentials and accessible sites. `node dist/bin/search-console-axi.js setup status` reports the credential type and available account email, never credential contents. `node dist/bin/search-console-axi.js setup uninstall` removes only the CLI's local configuration.
 
 ## Read Search Console
 
-Run `search-console-axi` for the default site's last seven complete days of clicks, impressions, CTR, position, top queries and pages, and low-CTR opportunities. Use `search-console-axi inspect <url> --site <site-url>` to inspect indexing for a URL. Reporting and inspection do not modify Search Console data; setup may write or remove local configuration.
+Run `node dist/bin/search-console-axi.js` for the default site's last seven complete days of clicks, impressions, CTR, position, top queries and pages, and low-CTR opportunities. Use `node dist/bin/search-console-axi.js inspect <url> --site <site-url>` to inspect indexing for a URL. Reporting and inspection do not modify Search Console data; setup may write or remove local configuration.

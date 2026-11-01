@@ -26,6 +26,17 @@ const setEnv = (t, name, value) => {
   else process.env[name] = value;
   t.after(() => (previous === undefined ? delete process.env[name] : (process.env[name] = previous)));
 };
+const isolateAuthEnv = (t) => {
+  const dir = temp(t);
+  const env = {
+    XDG_CONFIG_HOME: dir,
+    SEARCH_CONSOLE_AXI_SA_KEY: undefined,
+    GOOGLE_APPLICATION_CREDENTIALS: undefined,
+    GOOGLE_CLOUD_QUOTA_PROJECT: undefined,
+  };
+  for (const [name, value] of Object.entries(env)) setEnv(t, name, value);
+  return env;
+};
 const { privateKey } = generateKeyPairSync("rsa", {
   modulusLength: 2048,
   privateKeyEncoding: { type: "pkcs8", format: "pem" },
@@ -43,16 +54,17 @@ const mockAuth = (request) => ({
   client: { request },
 });
 
-test("CLI reports its version and live home without credentials", () => {
+test("CLI reports its version and live home without credentials", (t) => {
   assert.equal(run(["--version"]).trim(), version);
-  const home = decode(run([], { SEARCH_CONSOLE_AXI_SA_KEY: "{}", GOOGLE_APPLICATION_CREDENTIALS: "" }));
+  const home = decode(
+    run([], { ...isolateAuthEnv(t), SEARCH_CONSOLE_AXI_SA_KEY: "{}", GOOGLE_APPLICATION_CREDENTIALS: "" }),
+  );
   assert.equal(home.auth.status, "invalid");
   assert.equal(home.setup.guide.length > 0, true);
 });
 
 test("ADC requests only the Search Console read-only scope", async (t) => {
-  const dir = temp(t);
-  setEnv(t, "XDG_CONFIG_HOME", dir);
+  isolateAuthEnv(t);
   const client = new UserRefreshClient();
   client.setCredentials({ access_token: "test-access-token" });
   let options;
@@ -67,8 +79,7 @@ test("ADC requests only the Search Console read-only scope", async (t) => {
 });
 
 test("GOOGLE_APPLICATION_CREDENTIALS accepts authorized-user ADC files", async (t) => {
-  const dir = temp(t);
-  setEnv(t, "XDG_CONFIG_HOME", dir);
+  const { XDG_CONFIG_HOME: dir } = isolateAuthEnv(t);
   const credentialsPath = join(dir, "adc.json");
   writeFileSync(
     credentialsPath,
@@ -89,9 +100,16 @@ test("GOOGLE_APPLICATION_CREDENTIALS accepts authorized-user ADC files", async (
   assert.equal(auth.source, "GOOGLE_APPLICATION_CREDENTIALS");
 });
 
+test("auth status does not guess a credential type for an invalid ADC path", async (t) => {
+  isolateAuthEnv(t);
+  setEnv(t, "GOOGLE_APPLICATION_CREDENTIALS", "");
+  const status = decode(await setupCommand(["status"]));
+  assert.equal(status.auth.status, "invalid");
+  assert.equal("type" in status.auth, false);
+});
+
 test("service-account JSON env takes precedence without persisting or printing its key", async (t) => {
-  const dir = temp(t);
-  setEnv(t, "XDG_CONFIG_HOME", dir);
+  const { XDG_CONFIG_HOME: dir } = isolateAuthEnv(t);
   setEnv(t, "GOOGLE_APPLICATION_CREDENTIALS", undefined);
   setEnv(t, "SEARCH_CONSOLE_AXI_SA_KEY", key);
   const auth = await getAuthClient();
@@ -103,7 +121,8 @@ test("service-account JSON env takes precedence without persisting or printing i
   assert.equal(existsSync(join(dir, "search-console-axi", "config.json")), false);
 });
 
-test("setup check is ready with Search Console access alone", async () => {
+test("setup check is ready with Search Console access alone", async (t) => {
+  isolateAuthEnv(t);
   const credential = new UserRefreshClient();
   credential.request = async ({ url }) => {
     assert.equal(url, "https://searchconsole.googleapis.com/webmasters/v3/sites");
@@ -118,7 +137,8 @@ test("setup check is ready with Search Console access alone", async () => {
   assert.deepEqual(output.sites, [{ site_url: "sc-domain:example.com", permission: "siteRestrictedUser" }]);
 });
 
-test("empty Search Console site lists explain no resources may exist", async () => {
+test("empty Search Console site lists explain no resources may exist", async (t) => {
+  isolateAuthEnv(t);
   const auth = mockAuth(async () => ({ data: { siteEntry: [] } }));
   const expected = "No Search Console sites visible to this account - grant access as in step 4, or none exist.";
   const home = decode(await runHome(auth));
@@ -131,10 +151,11 @@ test("empty Search Console site lists explain no resources may exist", async () 
       authFactory: () => ({ getApplicationDefault: async () => ({ credential, projectId: null }) }),
     }),
   );
-  assert.equal(check.setup.missing[0], expected);
+  assert.match(check.setup.missing[0], /No verified Search Console sites/);
 });
 
-test("disabled Search Console APIs produce enable-project guidance for both Google error shapes", async () => {
+test("disabled Search Console APIs produce enable-project guidance for both Google error shapes", async (t) => {
+  isolateAuthEnv(t);
   const failures = [
     {
       message: "API disabled",
@@ -171,7 +192,8 @@ test("disabled Search Console APIs produce enable-project guidance for both Goog
   }
 });
 
-test("ordinary Search Console 403 errors retain access-denied guidance", async () => {
+test("ordinary Search Console 403 errors retain access-denied guidance", async (t) => {
+  isolateAuthEnv(t);
   const failRequest = async () => {
     throw Object.assign(new Error("forbidden"), {
       response: { status: 403, data: { error: { message: "Insufficient Permission" } } },
@@ -212,6 +234,11 @@ test("home reports Search Console queries, pages, and low-CTR opportunities", as
   assert.equal(output.top_queries.length, 1);
   assert.equal(output.top_pages.length, 1);
   assert.equal(output.low_ctr_opportunities.length, 1);
+  assert.equal(output.totals.ctr, "0.8%");
+  assert.equal(output.totals.position, "3.0");
+  assert.equal(output.top_queries[0].ctr, "0.8%");
+  assert.equal(output.top_pages[0].position, "3.0");
+  assert.equal(output.low_ctr_opportunities[0].ctr, "0.8%");
   assert.equal(calls.length, 5);
   const reports = calls.filter((call) => call.url.includes("searchAnalytics/query"));
   const dates = reports.map(({ data }) => [data.startDate, data.endDate]);
@@ -246,6 +273,39 @@ test("home reports Search Console queries, pages, and low-CTR opportunities", as
   assert.equal(dates[0][1], yesterday);
 });
 
+test("home skips unverified sites and setup check marks all-unverified accounts incomplete", async (t) => {
+  isolateAuthEnv(t);
+  const calls = [];
+  const auth = mockAuth(async (request) => {
+    calls.push(request);
+    if (request.url.endsWith("/sites"))
+      return {
+        data: {
+          siteEntry: [
+            { siteUrl: "sc-domain:unverified.example", permissionLevel: "siteUnverifiedUser" },
+            { siteUrl: "sc-domain:verified.example", permissionLevel: "siteRestrictedUser" },
+          ],
+        },
+      };
+    return { data: { rows: [] } };
+  });
+  const home = decode(await runHome(auth));
+  assert.equal(home.site, "sc-domain:verified.example");
+  assert.equal(calls.length, 5);
+
+  const credential = new UserRefreshClient();
+  credential.request = async () => ({
+    data: { siteEntry: [{ siteUrl: "sc-domain:unverified.example", permissionLevel: "siteUnverifiedUser" }] },
+  });
+  const check = decode(
+    await setupCommand(["check"], {
+      authFactory: () => ({ getApplicationDefault: async () => ({ credential, projectId: null }) }),
+    }),
+  );
+  assert.equal(check.setup.status, "incomplete");
+  assert.match(check.setup.missing[0], /No verified Search Console sites/);
+});
+
 test("URL inspection uses the read-only index inspection endpoint", async () => {
   let seen;
   const output = decode(
@@ -268,8 +328,7 @@ test("URL inspection uses the read-only index inspection endpoint", async () => 
 });
 
 test("uninstall is idempotent and removes only local config", async (t) => {
-  const dir = temp(t);
-  setEnv(t, "XDG_CONFIG_HOME", dir);
+  const { XDG_CONFIG_HOME: dir } = isolateAuthEnv(t);
   assert.deepEqual(decode(await setupCommand(["uninstall"])).auth, {
     status: "not configured",
     config: "already absent",

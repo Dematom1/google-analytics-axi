@@ -7,6 +7,8 @@ import { join, resolve } from "node:path";
 
 const SCOPES = ["https://www.googleapis.com/auth/webmasters.readonly"];
 const NO_ADC_MESSAGE = "Could not load the default credentials";
+const NO_CREDENTIALS_GUIDANCE =
+  "No service-account key or user ADC is configured. Load the key JSON into SEARCH_CONSOLE_AXI_SA_KEY or configure your own Desktop OAuth client.";
 const QUOTA_PROJECT_APIS = "Enable the Google Search Console API in the quota project.";
 const configDir = () =>
   process.env["XDG_CONFIG_HOME"]
@@ -18,6 +20,15 @@ const fail = (message: string): never => {
 };
 
 type Config = { serviceAccountPath?: string; quotaProjectId?: string };
+type AuthConfigErrorKind = "missing-credentials" | "invalid-service-account" | "invalid-credentials-path";
+class AuthConfigError extends Error {
+  constructor(
+    readonly kind: AuthConfigErrorKind,
+    message: string,
+  ) {
+    super(message);
+  }
+}
 type ServiceAccount = {
   type: "service_account";
   client_email: string;
@@ -103,10 +114,14 @@ function readServiceAccount(path: string, source: string): ServiceAccount {
   try {
     parsed = JSON.parse(readFileSync(path, "utf8"));
   } catch {
-    return fail(`${source} is unreadable or contains invalid JSON`);
+    throw new AuthConfigError("invalid-service-account", `${source} is unreadable or contains invalid JSON`);
   }
   const key = parseServiceAccount(parsed);
-  if (!key) throw new Error(`${source} does not contain a valid Google service-account key`);
+  if (!key)
+    throw new AuthConfigError(
+      "invalid-service-account",
+      `${source} does not contain a valid Google service-account key`,
+    );
   return key;
 }
 
@@ -120,12 +135,19 @@ export async function getAuthClient(options: ProviderOptions = {}): Promise<Auth
     try {
       serviceAccount = parseServiceAccount(JSON.parse(serviceAccountJson));
     } catch {
-      throw new Error("SEARCH_CONSOLE_AXI_SA_KEY must contain valid service-account JSON");
+      throw new AuthConfigError(
+        "invalid-service-account",
+        "SEARCH_CONSOLE_AXI_SA_KEY must contain valid service-account JSON",
+      );
     }
     if (!serviceAccount)
-      throw new Error("SEARCH_CONSOLE_AXI_SA_KEY does not contain a valid Google service-account key");
+      throw new AuthConfigError(
+        "invalid-service-account",
+        "SEARCH_CONSOLE_AXI_SA_KEY does not contain a valid Google service-account key",
+      );
   } else if (credentialsPath !== undefined) {
-    if (!credentialsPath) throw new Error("GOOGLE_APPLICATION_CREDENTIALS must not be empty");
+    if (!credentialsPath)
+      throw new AuthConfigError("invalid-credentials-path", "GOOGLE_APPLICATION_CREDENTIALS must not be empty");
   } else if (configuredPath) {
     serviceAccount = readServiceAccount(configuredPath, "Configured service-account key file");
   }
@@ -161,7 +183,7 @@ export async function getAuthClient(options: ProviderOptions = {}): Promise<Auth
     ({ credential, projectId } = await auth.getApplicationDefault());
   } catch (error) {
     if (error instanceof Error && error.message.includes(NO_ADC_MESSAGE))
-      throw new Error("Google Application Default Credentials are not configured");
+      throw new AuthConfigError("missing-credentials", "Google Application Default Credentials are not configured");
     throw error;
   }
   if (quotaOverride) credential.quotaProjectId = quotaOverride;
@@ -198,17 +220,9 @@ async function setupWithChecks(options: ProviderOptions): Promise<string> {
     const auth = await getAuthClient(options);
     return runSetupCheck(auth);
   } catch (error) {
-    if (error instanceof Error && error.message === "Google Application Default Credentials are not configured")
-      return setupGuideOutput([
-        "No service-account key or user ADC is configured. Load the key JSON into SEARCH_CONSOLE_AXI_SA_KEY or configure your own Desktop OAuth client.",
-      ]);
-    if (
-      error instanceof Error &&
-      (error.message.startsWith("SEARCH_CONSOLE_AXI_SA_KEY") ||
-        error.message.startsWith("GOOGLE_APPLICATION_CREDENTIALS") ||
-        error.message.startsWith("Configured service-account"))
-    )
-      return setupGuideOutput([error.message], "invalid");
+    if (error instanceof AuthConfigError && error.kind === "missing-credentials")
+      return setupGuideOutput([NO_CREDENTIALS_GUIDANCE]);
+    if (error instanceof AuthConfigError) return setupGuideOutput([error.message], "invalid");
     throw error;
   }
 }
@@ -238,25 +252,16 @@ async function authStatus(quotaProject?: string, providerOptions: ProviderOption
       help,
     });
   } catch (error) {
-    const config = readConfig();
-    const hasCredentialPath =
-      Boolean(config.serviceAccountPath) || process.env["GOOGLE_APPLICATION_CREDENTIALS"] !== undefined;
-    if (error instanceof Error && error.message === "Google Application Default Credentials are not configured")
-      return setupGuideOutput([
-        "No service-account key or user ADC is configured. Load the key JSON into SEARCH_CONSOLE_AXI_SA_KEY or configure your own Desktop OAuth client.",
-      ]);
-    if (!hasCredentialPath && error instanceof Error && error.message.includes(NO_ADC_MESSAGE))
-      return setupGuideOutput([
-        "No service-account key or user ADC is configured. Load the key JSON into SEARCH_CONSOLE_AXI_SA_KEY or configure your own Desktop OAuth client.",
-      ]);
-    if (
-      error instanceof Error &&
-      (error.message.startsWith("Service-account") ||
-        error.message.startsWith("SEARCH_CONSOLE_AXI_SA_KEY") ||
-        error.message.startsWith("GOOGLE_APPLICATION_CREDENTIALS") ||
-        error.message.startsWith("Configured service-account"))
-    )
-      return result({ auth: { status: "invalid", type: "service_account", error: error.message } });
+    if (error instanceof AuthConfigError && error.kind === "missing-credentials")
+      return setupGuideOutput([NO_CREDENTIALS_GUIDANCE]);
+    if (error instanceof AuthConfigError)
+      return result({
+        auth: {
+          status: "invalid",
+          ...(error.kind === "invalid-service-account" ? { type: "service_account" } : {}),
+          error: error.message,
+        },
+      });
     throw error;
   }
 }

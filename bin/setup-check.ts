@@ -122,9 +122,10 @@ async function sites(auth: AuthProvider): Promise<Site[]> {
 export async function runSetupCheck(auth: AuthProvider): Promise<string> {
   try {
     const accessible = await sites(auth);
-    const missing = accessible.length
+    const reportable = accessible.filter((site) => site.permissionLevel !== "siteUnverifiedUser");
+    const missing = reportable.length
       ? []
-      : ["No Search Console sites visible to this account - grant access as in step 4, or none exist."];
+      : ["No verified Search Console sites visible to this account - grant access as in step 4, or none exist."];
     return encode({
       auth: { type: auth.type, source: auth.source, ...(auth.email ? { account_email: auth.email } : {}) },
       setup: { status: missing.length ? "incomplete" : "ready", missing, guide: setupGuide },
@@ -165,7 +166,13 @@ export async function runHome(auth: AuthProvider): Promise<string> {
         sites: "No Search Console sites visible to this account - grant access as in step 4, or none exist.",
         help: ["Run search-console-axi setup for access instructions."],
       });
-    const site = accessible[0]!.siteUrl;
+    const site = accessible.find((entry) => entry.permissionLevel !== "siteUnverifiedUser")?.siteUrl;
+    if (!site)
+      return encode({
+        tool: "search-console-axi",
+        sites: "No verified Search Console sites visible to this account - grant access as in step 4, or none exist.",
+        help: ["Run search-console-axi setup for access instructions."],
+      });
     const dateRange = searchDateRange();
     const query = async (dimension: "query" | "page", orderBy: string) => {
       const result = await request(auth, `${API}/${encodeURIComponent(site)}/searchAnalytics/query`, "POST", {
@@ -211,15 +218,27 @@ export async function runHome(auth: AuthProvider): Promise<string> {
           row.impressions > 100,
       )
       .slice(0, 10);
+    const formatRows = (items: unknown[]) =>
+      items.map((item) =>
+        item && typeof item === "object"
+          ? {
+              ...item,
+              ...("ctr" in item && typeof item.ctr === "number" ? { ctr: `${(item.ctr * 100).toFixed(1)}%` } : {}),
+              ...("position" in item && typeof item.position === "number"
+                ? { position: item.position.toFixed(1) }
+                : {}),
+            }
+          : item,
+      );
     return encode({
       tool: "search-console-axi",
       site,
       sites: accessible.length,
       period: "last 7 complete days",
-      totals: summaryRows[0] ?? { clicks: 0, impressions: 0, ctr: 0, position: 0 },
-      top_queries: queries,
-      top_pages: pages,
-      low_ctr_opportunities: opportunities,
+      totals: formatRows([summaryRows[0] ?? { clicks: 0, impressions: 0, ctr: 0, position: 0 }])[0],
+      top_queries: formatRows(queries),
+      top_pages: formatRows(pages),
+      low_ctr_opportunities: formatRows(opportunities),
       help: [
         "Run search-console-axi setup check to verify access.",
         "Run search-console-axi inspect <url> --site <site> to check indexing.",
