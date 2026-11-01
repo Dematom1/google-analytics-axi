@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -177,6 +177,17 @@ test("empty credentials path is invalid and never falls back to ADC", async (t) 
   assert.match(status.auth.error, /GOOGLE_APPLICATION_CREDENTIALS/);
 });
 
+test("uninstall distinguishes absent config from removal failures", async (t) => {
+  const dir = temp(t);
+  setEnv(t, "XDG_CONFIG_HOME", dir);
+  assert.deepEqual(decode(await setupCommand(["uninstall"])).auth, {
+    status: "not configured",
+    config: "already absent",
+  });
+  mkdirSync(join(dir, "google-analytics-axi", "config.json"), { recursive: true });
+  await assert.rejects(setupCommand(["uninstall"]));
+});
+
 test("unreadable service-account key fails without printing key data", async (t) => {
   const dir = temp(t);
   setEnv(t, "XDG_CONFIG_HOME", dir);
@@ -192,5 +203,5 @@ test("unreadable service-account key fails without printing key data", async (t)
     /Google Application Default Credentials/,
   );
   setEnv(t, "GOOGLE_APPLICATION_CREDENTIALS", missing);
-  await assert.rejects(getAuthClient(), /Service-account key file is unreadable or invalid JSON/);
+  await assert.rejects(getAuthClient(), /GOOGLE_APPLICATION_CREDENTIALS is unreadable or contains invalid JSON/);
 });

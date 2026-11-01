@@ -257,8 +257,10 @@ export async function setupCommand(args: string[], providerOptions: ProviderOpti
     try {
       unlinkSync(configFile());
       return result({ auth: { status: "removed", config: "removed" } });
-    } catch {
-      return result({ auth: { status: "not configured", config: "already absent" } });
+    } catch (error) {
+      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT")
+        return result({ auth: { status: "not configured", config: "already absent" } });
+      throw error;
     }
   }
   if (action === "service-account") {
