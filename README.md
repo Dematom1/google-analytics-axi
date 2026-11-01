@@ -16,24 +16,29 @@ The CLI reads credentials through `google-auth-library`. It does not store OAuth
 
 ### Set up a service account (recommended)
 
-1. Create a service account in a dedicated Google Cloud project.
+1. Create or reuse a dedicated Google Cloud project.
 2. Enable the Google Analytics Data API, Google Analytics Admin API, and Google Search Console API in that project.
-3. Create a JSON key. Add the service account as Viewer on the GA4 property and as a user in Search Console. Restricted access is enough.
-4. Supply the key at runtime as `GOOGLE_ANALYTICS_AXI_SA_KEY` (JSON string), or set `GOOGLE_APPLICATION_CREDENTIALS` to its path. You can also register a local path with `google-analytics-axi setup service-account <key.json>`.
+3. Create a service account with no project-level IAM roles, then create a JSON key for it.
+4. Store the key in a secret manager and load its JSON into `GOOGLE_ANALYTICS_AXI_SA_KEY`. Never commit the key. For example:
 
-For example, inject the key without writing it to disk:
+   ```sh
+   GOOGLE_ANALYTICS_AXI_SA_KEY="$(<your secret manager command>)" google-analytics-axi setup check
+   ```
 
-```sh
-av inject +GOOGLE_ANALYTICS_AXI_SA_KEY -- google-analytics-axi setup status
-```
+5. Add the service account email as Viewer in GA4: **Admin > Property access management > + > Add users**. Untick **Notify new users**.
+6. Add it as Restricted in Search Console: **Settings > Users and permissions > Add user**.
 
-The environment variable takes precedence over the file path. Keys are parsed in memory and never copied, printed, or logged.
+The service account needs no project-level IAM roles. For local key files, set `GOOGLE_APPLICATION_CREDENTIALS` to the path or run `google-analytics-axi setup service-account <key.json>`. `GOOGLE_ANALYTICS_AXI_SA_KEY` takes precedence over `GOOGLE_APPLICATION_CREDENTIALS`, which takes precedence over user ADC. Keys are parsed in memory and never copied, printed, or logged.
+
+`google-analytics-axi setup` prints this numbered guide and checks for missing API and property access. `google-analytics-axi setup check [--property <id>]` verifies accessible GA4 properties and Search Console sites, then runs a read-only seven-day sessions and active-users total report.
+
+Do not create an OAuth client in a project whose consent screen serves another app. Google's built-in `gcloud` OAuth client is blocked for these scopes. If you temporarily save a key file and then delete it, chain the commands with `&&`, not `&`.
 
 ### Set up personal ADC
 
-1. Create one Google Cloud project. Enable the Google Analytics Data API, Google Analytics Admin API, and Google Search Console API in the quota project.
+1. Create or reuse a dedicated Google Cloud project and enable the Google Analytics Data API, Google Analytics Admin API, and Google Search Console API.
 2. Configure the OAuth consent screen as External, add yourself as a test user, and add the Analytics and Search Console read-only scopes.
-3. Create a Desktop OAuth client and download its JSON file as `client.json`.
+3. Create your own Desktop OAuth client as `client.json`.
 4. Run `gcloud auth application-default login --client-id-file=client.json --scopes=https://www.googleapis.com/auth/analytics.readonly,https://www.googleapis.com/auth/webmasters.readonly,https://www.googleapis.com/auth/cloud-platform`.
 5. Set the quota project with `gcloud auth application-default set-quota-project <project>`.
 

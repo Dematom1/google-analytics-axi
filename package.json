@@ -29,6 +29,7 @@
     "prepack": "npm run build"
   },
   "dependencies": {
+    "@google-analytics/data": "^7.3.0",
     "@toon-format/toon": "2.3.1",
     "axi-sdk-js": "0.1.13",
     "google-auth-library": "^11.3.2"

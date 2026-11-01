@@ -126,10 +126,11 @@ test("status explains both ADC setup paths when credentials are missing", async 
       }),
     }),
   );
-  assert.deepEqual(output.auth, { status: "not configured", type: "none" });
-  assert.ok(output.setup.some((line) => line.includes("--client-id-file=client.json")));
-  assert.ok(output.setup.some((line) => line.includes("GOOGLE_APPLICATION_CREDENTIALS")));
-  assert.ok(output.setup.some((line) => line.includes("Google Search Console API")));
+  assert.equal(output.auth.status, "not configured");
+  assert.ok(output.setup.guide.some((step) => step.instruction.includes("--client-id-file=client.json")));
+  assert.ok(output.setup.guide.some((step) => step.instruction.includes("GOOGLE_ANALYTICS_AXI_SA_KEY")));
+  assert.ok(output.setup.guide.some((step) => step.instruction.includes("Google Search Console API")));
+  assert.match(output.setup.missing[0], /No service-account key or user ADC/);
 });
 
 test("bare setup reports missing credentials rather than treating setup as an argument", async (t) => {
@@ -145,7 +146,7 @@ test("bare setup reports missing credentials rather than treating setup as an ar
       }),
     }),
   );
-  assert.deepEqual(output.auth, { status: "not configured", type: "none" });
+  assert.equal(output.auth.status, "not configured");
 });
 
 test("invalid service-account inputs fail at their named source without ADC fallback", async (t) => {
@@ -170,7 +171,10 @@ test("empty credentials path is invalid and never falls back to ADC", async (t) 
   setEnv(t, "GOOGLE_ANALYTICS_AXI_SA_KEY", undefined);
   setEnv(t, "GOOGLE_APPLICATION_CREDENTIALS", "");
   const seen = [];
-  await assert.rejects(getAuthClient({ authFactory: factoryFor(new UserRefreshClient(), seen) }), /GOOGLE_APPLICATION_CREDENTIALS/);
+  await assert.rejects(
+    getAuthClient({ authFactory: factoryFor(new UserRefreshClient(), seen) }),
+    /GOOGLE_APPLICATION_CREDENTIALS/,
+  );
   assert.equal(seen.length, 0);
   const status = decode(await setupCommand(["status"]));
   assert.equal(status.auth.status, "invalid");
@@ -186,6 +190,255 @@ test("uninstall distinguishes absent config from removal failures", async (t) =>
   });
   mkdirSync(join(dir, "google-analytics-axi", "config.json"), { recursive: true });
   await assert.rejects(setupCommand(["uninstall"]));
+});
+
+test("setup check reports properties, sites, and a seven-day total report using the env key in memory", async (t) => {
+  const dir = temp(t);
+  setEnv(t, "XDG_CONFIG_HOME", dir);
+  setEnv(t, "GOOGLE_APPLICATION_CREDENTIALS", undefined);
+  setEnv(
+    t,
+    "GOOGLE_ANALYTICS_AXI_SA_KEY",
+    JSON.stringify({
+      type: "service_account",
+      client_email: "check-agent@example.invalid",
+      project_id: "prod-project",
+      private_key: "not-a-real-key",
+    }),
+  );
+  const urls = [];
+  let reportProperty;
+  const output = decode(
+    await setupCommand(["check"], {
+      setupCheck: {
+        request: async (_auth, url) => {
+          urls.push(url);
+          if (url.includes("accountSummaries"))
+            return {
+              accountSummaries: [{ propertySummaries: [{ property: "properties/123", displayName: "Main site" }] }],
+            };
+          return { siteEntry: [{ siteUrl: "https://example.com/", permissionLevel: "siteRestrictedUser" }] };
+        },
+        runReport: async (_auth, propertyId) => {
+          reportProperty = propertyId;
+          return { rows: [{ metricValues: [{ value: "42" }, { value: "17" }] }] };
+        },
+      },
+    }),
+  );
+  assert.deepEqual(output.ga4_properties, [{ property_id: "123", display_name: "Main site" }]);
+  assert.deepEqual(output.search_console_sites, [
+    { site_url: "https://example.com/", permission: "siteRestrictedUser" },
+  ]);
+  assert.deepEqual(output.report, {
+    status: "ok",
+    property_id: "123",
+    date_range: "last 7 days",
+    totals: { sessions: "42", active_users: "17" },
+  });
+  assert.equal(reportProperty, "123");
+  assert.equal(urls.length, 2);
+  assert.equal(output.setup.status, "ready");
+  assert.equal(JSON.stringify(output).includes("not-a-real-key"), false);
+  assert.equal(existsSync(join(dir, "google-analytics-axi", "config.json")), false);
+});
+
+test("setup detects missing GA4 and Search Console access and disabled APIs", async (t) => {
+  const dir = temp(t);
+  setEnv(t, "XDG_CONFIG_HOME", dir);
+  setEnv(t, "GOOGLE_APPLICATION_CREDENTIALS", undefined);
+  setEnv(
+    t,
+    "GOOGLE_ANALYTICS_AXI_SA_KEY",
+    JSON.stringify({
+      type: "service_account",
+      client_email: "check-agent@example.invalid",
+      project_id: "prod-project",
+      private_key: "not-a-real-key",
+    }),
+  );
+  const output = decode(
+    await setupCommand(["setup"], {
+      setupCheck: {
+        request: async (_auth, url) => {
+          if (url.includes("accountSummaries"))
+            throw {
+              response: {
+                status: 403,
+                data: {
+                  error: {
+                    details: [
+                      {
+                        reason: "SERVICE_DISABLED",
+                        metadata: { service: "analyticsadmin.googleapis.com", consumer: "projects/prod-project" },
+                      },
+                    ],
+                  },
+                },
+              },
+            };
+          return { siteEntry: [] };
+        },
+        runReport: async () => {
+          throw new Error("must skip report when no property is accessible");
+        },
+      },
+    }),
+  );
+  assert.equal(output.setup.status, "incomplete");
+  assert.ok(
+    output.setup.missing.some((item) => item.includes("Google Analytics Admin API") && item.includes("prod-project")),
+  );
+  assert.ok(
+    output.errors.some(
+      (error) => error.step === "ga4_properties" && error.message.includes("Google Analytics Admin API"),
+    ),
+  );
+  assert.ok(
+    output.setup.missing.some(
+      (item) =>
+        item.includes("check-agent@example.invalid") &&
+        item.includes("Search Console Settings > Users and permissions"),
+    ),
+  );
+  assert.deepEqual(output.report, { status: "skipped" });
+});
+
+test("setup names the disabled Search Console API and project", async (t) => {
+  const dir = temp(t);
+  setEnv(t, "XDG_CONFIG_HOME", dir);
+  setEnv(t, "GOOGLE_APPLICATION_CREDENTIALS", undefined);
+  setEnv(
+    t,
+    "GOOGLE_ANALYTICS_AXI_SA_KEY",
+    JSON.stringify({
+      type: "service_account",
+      client_email: "check-agent@example.invalid",
+      project_id: "prod-project",
+      private_key: "not-a-real-key",
+    }),
+  );
+  const output = decode(
+    await setupCommand(["check"], {
+      setupCheck: {
+        request: async (_auth, url) => {
+          if (url.includes("accountSummaries"))
+            return { accountSummaries: [{ propertySummaries: [{ property: "properties/123" }] }] };
+          throw {
+            response: {
+              status: 403,
+              data: {
+                error: {
+                  details: [
+                    {
+                      reason: "SERVICE_DISABLED",
+                      metadata: { service: "searchconsole.googleapis.com", consumer: "projects/prod-project" },
+                    },
+                  ],
+                },
+              },
+            },
+          };
+        },
+        runReport: async () => ({ rows: [] }),
+      },
+    }),
+  );
+  assert.ok(
+    output.errors.some(
+      (error) =>
+        error.step === "search_console_sites" &&
+        error.message.includes("Google Search Console API") &&
+        error.message.includes("prod-project"),
+    ),
+  );
+});
+
+test("setup detects empty GA4 and Search Console access lists", async (t) => {
+  const dir = temp(t);
+  setEnv(t, "XDG_CONFIG_HOME", dir);
+  setEnv(t, "GOOGLE_APPLICATION_CREDENTIALS", undefined);
+  setEnv(
+    t,
+    "GOOGLE_ANALYTICS_AXI_SA_KEY",
+    JSON.stringify({
+      type: "service_account",
+      client_email: "check-agent@example.invalid",
+      private_key: "not-a-real-key",
+    }),
+  );
+  const output = decode(
+    await setupCommand(["check"], {
+      setupCheck: {
+        request: async () => ({ accountSummaries: [], siteEntry: [] }),
+      },
+    }),
+  );
+  assert.ok(
+    output.setup.missing.some(
+      (item) => item.includes("check-agent@example.invalid") && item.includes("GA4 Admin > Property access management"),
+    ),
+  );
+  assert.ok(
+    output.setup.missing.some(
+      (item) =>
+        item.includes("check-agent@example.invalid") &&
+        item.includes("Search Console Settings > Users and permissions"),
+    ),
+  );
+  assert.deepEqual(output.report, { status: "skipped" });
+});
+
+test("setup check reports a disabled Google Analytics Data API", async (t) => {
+  const dir = temp(t);
+  setEnv(t, "XDG_CONFIG_HOME", dir);
+  setEnv(t, "GOOGLE_APPLICATION_CREDENTIALS", undefined);
+  setEnv(
+    t,
+    "GOOGLE_ANALYTICS_AXI_SA_KEY",
+    JSON.stringify({
+      type: "service_account",
+      client_email: "check-agent@example.invalid",
+      project_id: "prod-project",
+      private_key: "not-a-real-key",
+    }),
+  );
+  const output = decode(
+    await setupCommand(["check", "--property", "123"], {
+      setupCheck: {
+        request: async (_auth, url) =>
+          url.includes("accountSummaries")
+            ? { accountSummaries: [{ propertySummaries: [{ property: "properties/123", displayName: "Main site" }] }] }
+            : { siteEntry: [{ siteUrl: "https://example.com/", permissionLevel: "siteRestrictedUser" }] },
+        runReport: async () => {
+          throw {
+            response: {
+              status: 403,
+              data: {
+                error: {
+                  details: [
+                    {
+                      reason: "SERVICE_DISABLED",
+                      metadata: { service: "analyticsdata.googleapis.com", consumer: "projects/prod-project" },
+                    },
+                  ],
+                },
+              },
+            },
+          };
+        },
+      },
+    }),
+  );
+  assert.ok(
+    output.errors.some(
+      (error) =>
+        error.step === "ga4_report" &&
+        error.message.includes("Google Analytics Data API") &&
+        error.message.includes("prod-project"),
+    ),
+  );
+  assert.equal(output.report.status, "error");
 });
 
 test("unreadable service-account key fails without printing key data", async (t) => {
