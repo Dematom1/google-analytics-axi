@@ -225,7 +225,7 @@ export async function runHome(auth: AuthProvider): Promise<string> {
               ...item,
               ...("ctr" in item && typeof item.ctr === "number" ? { ctr: `${(item.ctr * 100).toFixed(1)}%` } : {}),
               ...("position" in item && typeof item.position === "number"
-                ? { position: item.position.toFixed(1) }
+                ? { position: Number(item.position.toFixed(1)) }
                 : {}),
             }
           : item,

@@ -235,9 +235,11 @@ test("home reports Search Console queries, pages, and low-CTR opportunities", as
   assert.equal(output.top_pages.length, 1);
   assert.equal(output.low_ctr_opportunities.length, 1);
   assert.equal(output.totals.ctr, "0.8%");
-  assert.equal(output.totals.position, "3.0");
+  assert.equal(output.totals.position, 3);
+  assert.equal(typeof output.totals.position, "number");
   assert.equal(output.top_queries[0].ctr, "0.8%");
-  assert.equal(output.top_pages[0].position, "3.0");
+  assert.equal(output.top_pages[0].position, 3);
+  assert.equal(typeof output.top_pages[0].position, "number");
   assert.equal(output.low_ctr_opportunities[0].ctr, "0.8%");
   assert.equal(calls.length, 5);
   const reports = calls.filter((call) => call.url.includes("searchAnalytics/query"));
