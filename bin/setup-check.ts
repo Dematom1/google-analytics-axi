@@ -166,7 +166,8 @@ export async function runHome(auth: AuthProvider): Promise<string> {
         sites: "No Search Console sites visible to this account - grant access as in step 4, or none exist.",
         help: ["Run search-console-axi setup for access instructions."],
       });
-    const site = accessible.find((entry) => entry.permissionLevel !== "siteUnverifiedUser")?.siteUrl;
+    const reportable = accessible.filter((entry) => entry.permissionLevel !== "siteUnverifiedUser");
+    const site = reportable[0]?.siteUrl;
     if (!site)
       return encode({
         tool: "search-console-axi",
