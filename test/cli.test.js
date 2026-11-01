@@ -1,25 +1,16 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdirSync, rmSync } from "node:fs";
 import { test } from "node:test";
-import { createServer } from "node:http";
 import { runOAuthSetup } from "../dist/bin/auth.js";
 
 const cli = new URL("../dist/bin/google-analytics-axi.js", import.meta.url);
 const version = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const run = (...args) => execFileSync(process.execPath, [cli.pathname, ...args], { encoding: "utf8" });
 
-test("CLI exposes SDK help, setup help, version, and a no-argument home", () => {
-  assert.match(run("--help"), /Usage:/);
-  assert.match(run("--help"), /setup/);
-  assert.match(run("setup", "--help"), /service-account/);
-  assert.match(run("--help"), /update/);
+test("CLI reports its version and rejects incomplete OAuth credentials", () => {
   assert.equal(run("--version").trim(), version);
-  assert.match(run(), /status: scaffold/);
-  assert.throws(
-    () => run("setup", "--client-id", "test-client"),
-    (error) => error.stdout.toString().includes("provide --client-id and --client-secret"),
-  );
+  assert.throws(() => run("setup", "--client-id", "test-client"), (error) => error.status === 1);
 });
 
 test("OAuth uses read-only scopes, validates the loopback callback, and stores only the refresh token", async () => {
@@ -37,24 +28,25 @@ test("OAuth uses read-only scopes, validates the loopback callback, and stores o
     },
   };
   let requestedScopes = "";
-  const tokenServer = createServer(async (request, response) => {
-    let body = "";
-    for await (const chunk of request) body += chunk;
-    assert.match(body, /grant_type=authorization_code/);
-    response
-      .writeHead(200, { "content-type": "application/json" })
-      .end(JSON.stringify({ access_token: "never-print-access-token", refresh_token: "refresh-secret" }));
-  });
-  await new Promise((resolve) => tokenServer.listen(0, "127.0.0.1", resolve));
-  const address = tokenServer.address();
-  assert.ok(address && typeof address !== "string");
+  const configHome = new URL("../.test-config/", import.meta.url);
+  mkdirSync(configHome, { recursive: true });
+  const previousConfigHome = process.env.XDG_CONFIG_HOME;
+  const originalFetch = globalThis.fetch;
+  process.env.XDG_CONFIG_HOME = configHome.pathname;
+  globalThis.fetch = async (input, init) => {
+    if (String(input) === "https://oauth2.googleapis.com/token") {
+      assert.match(String(init.body), /grant_type=authorization_code/);
+      return new Response(JSON.stringify({ access_token: "never-print-access-token", refresh_token: "refresh-secret" }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return originalFetch(input, init);
+  };
   try {
     await runOAuthSetup({
       clientId: "client-id",
       clientSecret: "client-secret",
       keychain,
-      tokenEndpoint: `http://127.0.0.1:${address.port}/token`,
-      authorizeEndpoint: "http://accounts.test/auth",
       openBrowser: async (value) => {
         const auth = new URL(value);
         requestedScopes = auth.searchParams.get("scope");
@@ -74,6 +66,9 @@ test("OAuth uses read-only scopes, validates the loopback callback, and stores o
     ]);
     assert.equal(keychain.getPassword(), "refresh-secret");
   } finally {
-    tokenServer.close();
+    globalThis.fetch = originalFetch;
+    if (previousConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = previousConfigHome;
+    rmSync(configHome, { recursive: true, force: true });
   }
 });

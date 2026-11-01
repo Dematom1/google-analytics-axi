@@ -1,6 +1,6 @@
 import { Entry } from "@napi-rs/keyring";
 import { createServer } from "node:http";
-import { readFileSync, unlinkSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync, unlinkSync, writeFileSync, mkdirSync, existsSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
@@ -27,8 +27,6 @@ export type OAuthOptions = {
   clientSecret: string;
   keychain: Keychain;
   openBrowser?: (url: string) => void;
-  authorizeEndpoint?: string;
-  tokenEndpoint?: string;
 };
 
 function systemKeychain(): Keychain {
@@ -48,7 +46,9 @@ function openBrowser(url: string): void {
 
 function saveConfig(config: { serviceAccountPath?: string; authType?: string }): void {
   mkdirSync(configDir(), { recursive: true, mode: 0o700 });
-  writeFileSync(configFile(), `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+  const temporaryFile = `${configFile()}.tmp`;
+  writeFileSync(temporaryFile, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+  renameSync(temporaryFile, configFile());
 }
 function readConfig(): { serviceAccountPath?: string; authType?: string } {
   try {
@@ -73,9 +73,7 @@ export async function runOAuthSetup(options: OAuthOptions): Promise<void> {
   if (!address || typeof address === "string") throw new Error("Could not open the local OAuth callback");
   const redirectUri = `http://127.0.0.1:${address.port}/oauth2callback`;
   const state = randomBytes(24).toString("hex");
-  const authUrl = new URL(
-    options.authorizeEndpoint ?? "https://accounts.google.com/o/oauth2/v2/auth",
-  );
+  const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
   authUrl.search = new URLSearchParams({
     client_id: options.clientId,
     redirect_uri: redirectUri,
@@ -112,20 +110,17 @@ export async function runOAuthSetup(options: OAuthOptions): Promise<void> {
   try {
     (options.openBrowser ?? openBrowser)(authUrl.toString());
     const code = await callback;
-    const tokenResponse = await fetch(
-      options.tokenEndpoint ?? "https://oauth2.googleapis.com/token",
-      {
-        method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          code,
-          client_id: options.clientId,
-          client_secret: options.clientSecret,
-          redirect_uri: redirectUri,
-          grant_type: "authorization_code",
-        }),
-      },
-    );
+    const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        code,
+        client_id: options.clientId,
+        client_secret: options.clientSecret,
+        redirect_uri: redirectUri,
+        grant_type: "authorization_code",
+      }),
+    });
     if (!tokenResponse.ok) throw new Error("Google token exchange failed; check the OAuth client configuration");
     const data: unknown = await tokenResponse.json();
     if (
@@ -136,6 +131,7 @@ export async function runOAuthSetup(options: OAuthOptions): Promise<void> {
       !data.refresh_token.trim()
     )
       throw new Error("Google did not return a refresh token; retry setup and approve offline access");
+    const previousToken = options.keychain.getPassword();
     try {
       options.keychain.setPassword(data.refresh_token);
     } catch {
@@ -143,7 +139,15 @@ export async function runOAuthSetup(options: OAuthOptions): Promise<void> {
         "Could not store the Google refresh token in the OS keychain; check that the keychain is available and unlocked",
       );
     }
-    saveConfig({ authType: "oauth" });
+    try {
+      saveConfig({ authType: "oauth" });
+    } catch (error) {
+      try {
+        if (previousToken) options.keychain.setPassword(previousToken);
+        else options.keychain.deletePassword();
+      } catch {}
+      throw error;
+    }
   } finally {
     server.close();
   }
