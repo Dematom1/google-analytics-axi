@@ -8,6 +8,9 @@ import { spawn } from "node:child_process";
 
 const SERVICE = "google-analytics-axi";
 const ACCOUNT = "google-oauth-refresh-token";
+/** Test-only overrides; inert unless GOOGLE_ANALYTICS_AXI_TEST_MODE=1. */
+const testOverride = (name: string) =>
+  process.env["GOOGLE_ANALYTICS_AXI_TEST_MODE"] === "1" ? process.env[`GOOGLE_ANALYTICS_AXI_TEST_${name}`] : undefined;
 const SCOPES = [
   "https://www.googleapis.com/auth/analytics.readonly",
   "https://www.googleapis.com/auth/webmasters.readonly",
@@ -33,7 +36,7 @@ export type OAuthOptions = {
 
 function systemKeychain(): Keychain {
   try {
-    return new Entry(SERVICE, ACCOUNT);
+    return new Entry(testOverride("KEYCHAIN_SERVICE") ?? SERVICE, testOverride("KEYCHAIN_ACCOUNT") ?? ACCOUNT);
   } catch {
     return fail("OS keychain is unavailable; install and unlock Secret Service (Linux) or use macOS Keychain");
   }
@@ -73,7 +76,9 @@ export async function runOAuthSetup(options: OAuthOptions): Promise<void> {
   if (!address || typeof address === "string") throw new Error("Could not open the local OAuth callback");
   const redirectUri = `http://127.0.0.1:${address.port}/oauth2callback`;
   const state = randomBytes(24).toString("hex");
-  const authUrl = new URL(options.authorizeEndpoint ?? "https://accounts.google.com/o/oauth2/v2/auth");
+  const authUrl = new URL(
+    options.authorizeEndpoint ?? testOverride("AUTHORIZATION_URL") ?? "https://accounts.google.com/o/oauth2/v2/auth",
+  );
   authUrl.search = new URLSearchParams({
     client_id: options.clientId,
     redirect_uri: redirectUri,
@@ -110,19 +115,24 @@ export async function runOAuthSetup(options: OAuthOptions): Promise<void> {
     });
   });
   try {
-    (options.openBrowser ?? openBrowser)(authUrl.toString());
+    const authUrlFile = testOverride("AUTH_URL_FILE");
+    if (authUrlFile) writeFileSync(authUrlFile, authUrl.toString(), { mode: 0o600 });
+    else (options.openBrowser ?? openBrowser)(authUrl.toString());
     const code = await callback;
-    const tokenResponse = await fetch(options.tokenEndpoint ?? "https://oauth2.googleapis.com/token", {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        code,
-        client_id: options.clientId,
-        client_secret: options.clientSecret,
-        redirect_uri: redirectUri,
-        grant_type: "authorization_code",
-      }),
-    });
+    const tokenResponse = await fetch(
+      options.tokenEndpoint ?? testOverride("TOKEN_URL") ?? "https://oauth2.googleapis.com/token",
+      {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          code,
+          client_id: options.clientId,
+          client_secret: options.clientSecret,
+          redirect_uri: redirectUri,
+          grant_type: "authorization_code",
+        }),
+      },
+    );
     if (!tokenResponse.ok) throw new Error("Google token exchange failed; check the OAuth client configuration");
     const data: unknown = await tokenResponse.json();
     if (
@@ -147,9 +157,11 @@ export async function runOAuthSetup(options: OAuthOptions): Promise<void> {
 }
 
 export async function setupCommand(args: string[]): Promise<string> {
-  const [action = "oauth", ...rest] = args;
-  if (action === "--help" || action === "-h")
+  const [first] = args;
+  if (first === "--help" || first === "-h")
     return "usage: google-analytics-axi setup [--client-id <id> --client-secret <secret>] | service-account <key.json> | status | uninstall\nOAuth client credentials can also be set with GOOGLE_ANALYTICS_AXI_CLIENT_ID and GOOGLE_ANALYTICS_AXI_CLIENT_SECRET.\n";
+  const action = first && !first.startsWith("-") ? first : "oauth";
+  const rest = action === "oauth" ? args : args.slice(1);
   if (action === "status") {
     if (rest.length) fail("usage: google-analytics-axi setup status");
     const config = readConfig();

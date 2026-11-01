@@ -9,11 +9,17 @@ const cli = new URL("../dist/bin/google-analytics-axi.js", import.meta.url);
 const version = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const run = (...args) => execFileSync(process.execPath, [cli.pathname, ...args], { encoding: "utf8" });
 
-test("CLI exposes SDK help and version and a no-argument home", () => {
+test("CLI exposes SDK help, setup help, version, and a no-argument home", () => {
   assert.match(run("--help"), /Usage:/);
+  assert.match(run("--help"), /setup/);
+  assert.match(run("setup", "--help"), /service-account/);
   assert.match(run("--help"), /update/);
   assert.equal(run("--version").trim(), version);
   assert.match(run(), /status: scaffold/);
+  assert.throws(
+    () => run("setup", "--client-id", "test-client"),
+    (error) => error.stdout.toString().includes("provide --client-id and --client-secret"),
+  );
 });
 
 test("OAuth uses read-only scopes, validates the loopback callback, and stores only the refresh token", async () => {
