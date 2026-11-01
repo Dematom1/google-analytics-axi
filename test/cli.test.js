@@ -230,6 +230,30 @@ test("uninstall distinguishes absent config from removal failures", async (t) =>
   await assert.rejects(setupCommand(["uninstall"]));
 });
 
+test("malformed config blocks status and credential replacement", async (t) => {
+  const dir = temp(t);
+  setEnv(t, "XDG_CONFIG_HOME", dir);
+  setEnv(t, "GOOGLE_ANALYTICS_AXI_SA_KEY", undefined);
+  setEnv(t, "GOOGLE_APPLICATION_CREDENTIALS", undefined);
+  const configDir = join(dir, "google-analytics-axi");
+  mkdirSync(configDir, { recursive: true });
+  const configPath = join(configDir, "config.json");
+  writeFileSync(configPath, "{broken");
+  const keyPath = join(dir, "key.json");
+  writeFileSync(keyPath, JSON.stringify({
+    type: "service_account",
+    client_email: "agent@example.invalid",
+    private_key: "not-used",
+  }));
+  await assert.rejects(setupCommand(["status"]), /contains invalid JSON/);
+  await assert.rejects(setupCommand(["service-account", keyPath]), /contains invalid JSON/);
+  await assert.rejects(
+    setupCommand([], { authFactory: () => ({ getApplicationDefault: async () => ({}) }) }),
+    /contains invalid JSON/,
+  );
+  assert.equal(readFileSync(configPath, "utf8"), "{broken");
+});
+
 test("setup check reports properties, sites, and a seven-day total report using the env key in memory", async (t) => {
   const dir = temp(t);
   setEnv(t, "XDG_CONFIG_HOME", dir);
@@ -249,7 +273,12 @@ test("setup check reports properties, sites, and a seven-day total report using 
     await setupCommand(["check"], setupOptions(t, {
       accountSummaries: [{ propertySummaries: [{ property: "properties/123", displayName: "Main site" }] }],
       sites: [{ siteUrl: "https://example.com/", permissionLevel: "siteRestrictedUser" }],
-      report: { rows: [{ metricValues: [{ value: "42" }, { value: "17" }] }] },
+      report: {
+        rows: [
+          { metricValues: [{ value: "42" }, { value: "17" }] },
+          { metricValues: [{ value: "8" }, { value: "3" }] },
+        ],
+      },
       requests: urls,
     })),
   );
@@ -261,7 +290,7 @@ test("setup check reports properties, sites, and a seven-day total report using 
     status: "ok",
     property_id: "123",
     date_range: "last 7 days",
-    totals: { sessions: "42", active_users: "17" },
+    totals: { sessions: "50", active_users: "20" },
   });
   assert.equal(urls.filter((url) => url.includes("googleapis.com")).length, 3);
   assert.ok(urls.some((url) => url.includes("properties/123:runReport")));
@@ -395,6 +424,29 @@ test("setup detects empty GA4 and Search Console access lists", async (t) => {
   );
   assert.deepEqual(output.report, { status: "skipped" });
   assert.equal(output.setup.status, "incomplete");
+});
+
+test("explicit property must appear in the visible property list", async (t) => {
+  const dir = temp(t);
+  setEnv(t, "XDG_CONFIG_HOME", dir);
+  setEnv(t, "GOOGLE_APPLICATION_CREDENTIALS", undefined);
+  setEnv(
+    t,
+    "GOOGLE_ANALYTICS_AXI_SA_KEY",
+    JSON.stringify({ type: "service_account", client_email: "check-agent@example.invalid", private_key: "key" }),
+  );
+  const urls = [];
+  const output = decode(
+    await setupCommand(["check", "--property", "999"], setupOptions(t, {
+      accountSummaries: [{ propertySummaries: [{ property: "properties/123" }] }],
+      sites: [{ siteUrl: "https://example.com/", permissionLevel: "siteRestrictedUser" }],
+      requests: urls,
+    })),
+  );
+  assert.equal(output.report.status, "skipped");
+  assert.equal(output.setup.status, "incomplete");
+  assert.ok(output.setup.missing.some((item) => item.includes("property 999 is not visible")));
+  assert.equal(urls.some((url) => url.includes("analyticsdata.googleapis.com")), false);
 });
 
 test("setup check identifies legacy disabled API errors", async (t) => {

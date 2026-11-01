@@ -166,15 +166,16 @@ function siteEntries(sites: unknown[]): { site_url: string; permission: string }
 function metricTotals(report: unknown): Record<string, string> {
   if (!report || typeof report !== "object" || !("rows" in report) || !Array.isArray(report.rows))
     return { sessions: "0", active_users: "0" };
-  const first = report.rows[0];
-  if (!first || typeof first !== "object" || !("metricValues" in first) || !Array.isArray(first.metricValues))
-    return { sessions: "0", active_users: "0" };
-  const values = first.metricValues;
-  const valueAt = (index: number) => {
-    const item = values[index];
-    return item && typeof item === "object" && "value" in item ? String(item.value) : "0";
-  };
-  return { sessions: valueAt(0), active_users: valueAt(1) };
+  const sumAt = (index: number) =>
+    report.rows.reduce((total, row) => {
+      if (!row || typeof row !== "object" || !("metricValues" in row) || !Array.isArray(row.metricValues))
+        return total;
+      const item = row.metricValues[index];
+      if (!item || typeof item !== "object" || !("value" in item)) return total;
+      const value = String(item.value);
+      return /^-?\d+$/.test(value) ? total + BigInt(value) : total;
+    }, 0n).toString();
+  return { sessions: sumAt(0), active_users: sumAt(1) };
 }
 
 export async function runSetupCheck(auth: AuthProvider, options: SetupCheckOptions = {}): Promise<string> {
@@ -222,9 +223,13 @@ export async function runSetupCheck(auth: AuthProvider, options: SetupCheckOptio
     else if (errorInfo(error).status === 403) missing.push(message);
   }
 
-  const propertyId = properties.length
-    ? (options.propertyId?.replace(/^properties\//, "") ?? properties[0]?.property_id)
-    : undefined;
+  const requestedPropertyId = options.propertyId?.replace(/^properties\//, "");
+  const propertyId =
+    options.propertyId === undefined
+      ? properties[0]?.property_id
+      : properties.find((property) => property.property_id === requestedPropertyId)?.property_id;
+  if (options.propertyId !== undefined && !propertyId)
+    missing.push(`GA4 property ${requestedPropertyId} is not visible to ${email}; choose a property from the accessible list.`);
   let reportResult: { status: string; property_id?: string; date_range?: string; totals?: Record<string, string> };
   if (!propertyId) {
     reportResult = { status: "skipped" };

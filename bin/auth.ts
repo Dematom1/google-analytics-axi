@@ -42,20 +42,31 @@ export type AuthProvider = {
 };
 
 function readConfig(): Config {
+  let text: string;
   try {
-    const data: unknown = JSON.parse(readFileSync(configFile(), "utf8"));
-    if (data && typeof data === "object") {
-      const config: Config = {};
-      if ("serviceAccountPath" in data && typeof data.serviceAccountPath === "string")
-        config.serviceAccountPath = data.serviceAccountPath;
-      if ("quotaProjectId" in data && typeof data.quotaProjectId === "string")
-        config.quotaProjectId = data.quotaProjectId;
-      return config;
-    }
-  } catch {
-    /* No configured path or quota project. */
+    text = readFileSync(configFile(), "utf8");
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return {};
+    throw error;
   }
-  return {};
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error(`Config file ${configFile()} contains invalid JSON`);
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data))
+    throw new Error(`Config file ${configFile()} has an invalid format`);
+  if (
+    ("serviceAccountPath" in data && typeof data.serviceAccountPath !== "string") ||
+    ("quotaProjectId" in data && typeof data.quotaProjectId !== "string")
+  )
+    throw new Error(`Config file ${configFile()} has an invalid format`);
+  const config: Config = {};
+  if ("serviceAccountPath" in data && typeof data.serviceAccountPath === "string")
+    config.serviceAccountPath = data.serviceAccountPath;
+  if ("quotaProjectId" in data && typeof data.quotaProjectId === "string") config.quotaProjectId = data.quotaProjectId;
+  return config;
 }
 
 function saveConfig(config: Config): void {
