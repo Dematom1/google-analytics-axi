@@ -131,6 +131,11 @@ test("home reports Search Console queries, pages, and low-CTR opportunities", as
   assert.equal(calls.length, 5);
   const reports = calls.filter((call) => call.url.includes("searchAnalytics/query"));
   const dates = reports.map(({ data }) => [data.startDate, data.endDate]);
+  const orderedQueries = reports.filter(({ data }) => data.orderBy);
+  assert.deepEqual(
+    orderedQueries.map(({ data }) => [data.orderBy[0].field, data.orderBy[0].direction]).sort(),
+    [["clicks", "descending"], ["clicks", "descending"], ["impressions", "descending"]].sort(),
+  );
   assert.equal(dates.length, 4);
   assert.ok(dates.every(([start, end]) => /^\d{4}-\d{2}-\d{2}$/.test(start) && /^\d{4}-\d{2}-\d{2}$/.test(end)));
   assert.ok(dates.every(([start, end]) => start === dates[0][0] && end === dates[0][1]));

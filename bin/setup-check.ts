@@ -111,7 +111,7 @@ export async function runHome(auth: AuthProvider): Promise<string> {
         ...dateRange,
         dimensions: [dimension],
         rowLimit: 10,
-        orderBy: [{ field: orderBy, direction: "DESCENDING" }],
+        orderBy: [{ field: orderBy, direction: "descending" }],
       });
       return result && typeof result === "object" && "rows" in result && Array.isArray(result.rows) ? result.rows : [];
     };
@@ -128,7 +128,7 @@ export async function runHome(auth: AuthProvider): Promise<string> {
       ...dateRange,
       dimensions: ["page"],
       rowLimit: 1000,
-      orderBy: [{ field: "impressions", direction: "DESCENDING" }],
+      orderBy: [{ field: "impressions", direction: "descending" }],
     });
     const rows =
       opportunityRows &&
