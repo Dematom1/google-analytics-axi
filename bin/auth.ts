@@ -117,7 +117,8 @@ export async function getAuthClient(options: ProviderOptions = {}): Promise<Auth
     }
     if (!serviceAccount)
       throw new Error("GOOGLE_ANALYTICS_AXI_SA_KEY does not contain a valid Google service-account key");
-  } else if (credentialsPath) {
+  } else if (credentialsPath !== undefined) {
+    if (!credentialsPath) throw new Error("GOOGLE_APPLICATION_CREDENTIALS must not be empty");
     serviceAccount = readServiceAccount(credentialsPath, "GOOGLE_APPLICATION_CREDENTIALS");
   } else if (configuredPath) {
     serviceAccount = readServiceAccount(configuredPath, "Configured service-account key file");
@@ -210,7 +211,8 @@ async function authStatus(quotaProject?: string, providerOptions: ProviderOption
     });
   } catch (error) {
     const config = readConfig();
-    const hasCredentialPath = Boolean(config.serviceAccountPath || process.env["GOOGLE_APPLICATION_CREDENTIALS"]);
+    const hasCredentialPath =
+      Boolean(config.serviceAccountPath) || process.env["GOOGLE_APPLICATION_CREDENTIALS"] !== undefined;
     if (error instanceof Error && error.message === "Google Application Default Credentials are not configured")
       return result({ auth: { status: "not configured", type: "none" }, setup: setupInstructions() });
     if (!hasCredentialPath && error instanceof Error && error.message.includes(NO_ADC_MESSAGE))

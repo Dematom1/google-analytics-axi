@@ -164,6 +164,19 @@ test("invalid service-account inputs fail at their named source without ADC fall
   assert.equal(seen.length, 0);
 });
 
+test("empty credentials path is invalid and never falls back to ADC", async (t) => {
+  const dir = temp(t);
+  setEnv(t, "XDG_CONFIG_HOME", dir);
+  setEnv(t, "GOOGLE_ANALYTICS_AXI_SA_KEY", undefined);
+  setEnv(t, "GOOGLE_APPLICATION_CREDENTIALS", "");
+  const seen = [];
+  await assert.rejects(getAuthClient({ authFactory: factoryFor(new UserRefreshClient(), seen) }), /GOOGLE_APPLICATION_CREDENTIALS/);
+  assert.equal(seen.length, 0);
+  const status = decode(await setupCommand(["status"]));
+  assert.equal(status.auth.status, "invalid");
+  assert.match(status.auth.error, /GOOGLE_APPLICATION_CREDENTIALS/);
+});
+
 test("unreadable service-account key fails without printing key data", async (t) => {
   const dir = temp(t);
   setEnv(t, "XDG_CONFIG_HOME", dir);
