@@ -56,8 +56,16 @@ function errorInfo(error: unknown): ErrorInfo {
   const data = "data" in response && response.data && typeof response.data === "object" ? response.data : {};
   const apiError = "error" in data && data.error && typeof data.error === "object" ? data.error : {};
   const details = "details" in apiError && Array.isArray(apiError.details) ? apiError.details : [];
+  const legacyErrors = "errors" in apiError && Array.isArray(apiError.errors) ? apiError.errors : [];
   const disabled = details.find(
     (item) => item && typeof item === "object" && "reason" in item && item.reason === "SERVICE_DISABLED",
+  );
+  const legacyDisabled = legacyErrors.some(
+    (item) =>
+      item &&
+      typeof item === "object" &&
+      "reason" in item &&
+      (item.reason === "accessNotConfigured" || item.reason === "SERVICE_DISABLED"),
   );
   const metadata =
     disabled && "metadata" in disabled && disabled.metadata && typeof disabled.metadata === "object"
@@ -65,12 +73,13 @@ function errorInfo(error: unknown): ErrorInfo {
       : {};
   const service = "service" in metadata && typeof metadata.service === "string" ? metadata.service : undefined;
   const consumer = "consumer" in metadata && typeof metadata.consumer === "string" ? metadata.consumer : undefined;
-  const project = consumer?.match(/projects\/([^/]+)/)?.[1];
+  const message = "message" in apiError && typeof apiError.message === "string" ? apiError.message : "";
+  const project = consumer?.match(/projects\/([^/]+)/)?.[1] ?? message.match(/project(?:s)?[\s/:=]+([\w.-]+)/i)?.[1];
   return {
     ...(status ? { status } : {}),
     ...(service ? { service } : {}),
     ...(project ? { project } : {}),
-    serviceDisabled: Boolean(disabled),
+    serviceDisabled: Boolean(disabled) || legacyDisabled,
   };
 }
 
@@ -214,7 +223,9 @@ export async function runSetupCheck(auth: AuthProvider, options: SetupCheckOptio
     else if (errorInfo(error).status === 403) missing.push(message);
   }
 
-  const propertyId = options.propertyId?.replace(/^properties\//, "") ?? properties[0]?.property_id;
+  const propertyId = properties.length
+    ? (options.propertyId?.replace(/^properties\//, "") ?? properties[0]?.property_id)
+    : undefined;
   let reportResult: { status: string; property_id?: string; date_range?: string; totals?: Record<string, string> };
   if (!propertyId) {
     reportResult = { status: "skipped" };

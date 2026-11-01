@@ -368,9 +368,12 @@ test("setup detects empty GA4 and Search Console access lists", async (t) => {
     }),
   );
   const output = decode(
-    await setupCommand(["check"], {
+    await setupCommand(["check", "--property", "999"], {
       setupCheck: {
         request: async () => ({ accountSummaries: [], siteEntry: [] }),
+        runReport: async () => {
+          throw new Error("must skip report when no property is accessible");
+        },
       },
     }),
   );
@@ -387,9 +390,45 @@ test("setup detects empty GA4 and Search Console access lists", async (t) => {
     ),
   );
   assert.deepEqual(output.report, { status: "skipped" });
+  assert.equal(output.setup.status, "incomplete");
 });
 
-test("setup check reports a disabled Google Analytics Data API", async (t) => {
+test("setup check identifies legacy disabled API errors", async (t) => {
+  const dir = temp(t);
+  setEnv(t, "XDG_CONFIG_HOME", dir);
+  setEnv(t, "GOOGLE_APPLICATION_CREDENTIALS", undefined);
+  setEnv(
+    t,
+    "GOOGLE_ANALYTICS_AXI_SA_KEY",
+    JSON.stringify({ type: "service_account", client_email: "check-agent@example.invalid", private_key: "key" }),
+  );
+  const output = decode(
+    await setupCommand(["check"], {
+      setupCheck: {
+        request: async (_auth, url) => {
+          if (url.includes("accountSummaries"))
+            throw {
+              response: {
+                status: 403,
+                data: { error: { errors: [{ reason: "accessNotConfigured" }], message: "API disabled in project legacy-project" } },
+              },
+            };
+          return { siteEntry: [] };
+        },
+      },
+    }),
+  );
+  assert.ok(
+    output.errors.some(
+      (error) =>
+        error.step === "ga4_properties" &&
+        error.message.includes("Google Analytics Admin API") &&
+        error.message.includes("legacy-project"),
+    ),
+  );
+});
+
+test("setup check reports a disabled Google Analytics Data API",  async (t) => {
   const dir = temp(t);
   setEnv(t, "XDG_CONFIG_HOME", dir);
   setEnv(t, "GOOGLE_APPLICATION_CREDENTIALS", undefined);
