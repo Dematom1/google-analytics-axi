@@ -87,7 +87,10 @@ function saveConfig(config: Config): void {
   } catch (error) {
     try {
       unlinkSync(temporaryFile);
-    } catch {}
+    } catch (cleanupError) {
+      if (!(cleanupError instanceof Error && "code" in cleanupError && cleanupError.code === "ENOENT"))
+        throw cleanupError;
+    }
     throw error;
   }
 }
